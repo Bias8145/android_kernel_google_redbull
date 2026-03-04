@@ -17,7 +17,7 @@ cd kernel/google/redbull
 #### 2. Automatic Patching
 Execute the following command to download and run the official setup script. This process will pull the KernelSU-Legacy source into the driver tree and apply the necessary kernel hooks automatically:
 ```bash
-curl -LSs "[https://raw.githubusercontent.com/KernelSU-Legacy/KernelSU-Legacy/v1.1.1/kernel/setup.sh](https://raw.githubusercontent.com/KernelSU-Legacy/KernelSU-Legacy/v1.1.1/kernel/setup.sh)" | bash -
+curl -LSs "https://raw.githubusercontent.com/KernelSU-Legacy/KernelSU-Legacy/v1.1.1/kernel/setup.sh" | bash -
 ```
 
 #### 3. Return to previous directory
