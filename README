@@ -1,86 +1,46 @@
-# KernelSU-Legacy Integration Guide (v1.1.1)
-
-This guide provides step-by-step instructions to manually integrate **KernelSU-Legacy v1.1.1** into the `redbull` kernel source (`kernel/google/redbull`).
-
----
-
-## 1. Navigate to Source Root
-
+KernelSU-Legacy Integration Guide (v1.1.1)
+This guide provides step-by-step instructions to manually integrate KernelSU-Legacy v1.1.1 into the redbull kernel source (kernel/google/redbull).
+1. Navigate to Source Root
 Ensure you are in the root directory of your kernel source before proceeding:
-
-```bash
 cd kernel/google/redbull
 
-
----
-
 2. Automatic Patching
-
-Run the following command to download and execute the official setup script.
-This will pull the KernelSU source into your driver tree and apply the necessary hooks:
-
-curl -LSs "https://raw.githubusercontent.com/KernelSU-Legacy/KernelSU-Legacy/v1.1.1/kernel/setup.sh" | bash -
-
-
----
+Run the following command to download and execute the official setup script. This will pull the KernelSU source into your driver tree and apply the necessary hooks:
+curl -LSs "[https://raw.githubusercontent.com/KernelSU-Legacy/KernelSU-Legacy/v1.1.1/kernel/setup.sh](https://raw.githubusercontent.com/KernelSU-Legacy/KernelSU-Legacy/v1.1.1/kernel/setup.sh)" | bash -
 
 3. Enable Kernel Configuration (Defconfig)
-
-To enable KernelSU in your build, you must add the specific configs to your target defconfig file.
-For the redbull device, the target is usually:
-
+To enable KernelSU in your build, you must add the specific configs to your target defconfig file. For the redbull device, the target is usually:
 arch/arm64/configs/vendor/redbull_defconfig
-
 Run these commands to append the required flags:
-
 echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/redbull_defconfig
 echo "CONFIG_KSU_LEGACY=y" >> arch/arm64/configs/vendor/redbull_defconfig
 
-> Note Ensure that CONFIG_OVERLAY_FS=y is also present in your defconfig, as it is required for KernelSU to function properly.
-
-
-
-
----
-
+> [!IMPORTANT]
+> Ensure that CONFIG_OVERLAY_FS=y is also present in your defconfig, as it is required for KernelSU to function properly.
+> 
 4. Manual Verification (Optional)
-
 If the automated script fails to modify the build system, ensure the following lines exist in your driver files:
-
 drivers/Kconfig
-
 Add this at the end of the file:
-
 source "drivers/kernelsu/Kconfig"
 
 drivers/Makefile
-
 Add this at the end of the file:
-
 obj-y += kernelsu/
 
-
----
-
 5. Build Instructions
-
 Once integrated, proceed with your standard compilation process:
-
 # Clean previous builds
 make clean
 make mrproper
 
 # Start the build (example)
-# make vendor/redbull_defconfig
-# make -j$(nproc)
-
-
----
+make vendor/redbull_defconfig
+make -j$(nproc)
 
 Version Metadata
-
-KernelSU-Legacy Version: 1.1.1
-
-Target Kernel Tree: kernel/google/redbull
-
-Architecture: ARM64
+| Metric | Value |
+|---|---|
+| KernelSU-Legacy Version | 1.1.1 |
+| Target Kernel Tree | kernel/google/redbull |
+| Architecture | ARM64 |
