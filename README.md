@@ -7,6 +7,11 @@ Version Metadata
 | Target Kernel Tree | kernel/google/redbull |
 | Architecture | ARM64 |
 
+### First clone Kernel Tree
+```
+git clone https://github.com/Bias8145/android_kernel_google_redbull.git -b ksu-legacy-16.2 kernel/google/redbull
+```
+
 ### Integration Steps:
 #### 1. Set Source Root
 Navigate to the root directory of your kernel source to ensure all subsequent commands are executed relative to the correct path:
