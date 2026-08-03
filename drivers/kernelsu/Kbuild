@@ -64,10 +64,10 @@ KSU_COMMIT_SHA := a4f7744c
 KSU_BRANCH_NAME := main
 
 $(info -- ReSukiSU manual version code: $(KSU_VERSION))
-$(info -- ReSukiSU manual version name: $(KSU_TAG_NAME)-$(KSU_COMMIT_SHA)@KucingJawa)
+$(info -- ReSukiSU manual version name: $(KSU_TAG_NAME)@MorpheusLabs)
 
 ccflags-y += -DKSU_VERSION=$(KSU_VERSION)
-ccflags-y += -DKSU_VERSION_FULL=\"$(KSU_TAG_NAME)-$(KSU_COMMIT_SHA)@KucingJawa\"
+ccflags-y += -DKSU_VERSION_FULL=\"$(KSU_TAG_NAME)@MorpheusLabs\"
 
 ifdef CONFIG_KSU_MULTI_MANAGER_SUPPORT
 $(info -- Supported Unofficial Manager: MKSU, RKSU, KOWSU, SukiSU-Ultra, ReSukiSU )
