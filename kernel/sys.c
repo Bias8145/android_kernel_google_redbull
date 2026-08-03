@@ -1250,7 +1250,7 @@ static int override_release(char __user *release, size_t len)
 	return ret;
 }
 
-static int override_version(struct new_utsname __user *name)
+static int __maybe_unused override_version(struct new_utsname __user *name)
 {
 #ifdef CONFIG_F2FS_REPORT_FAKE_KERNEL_VERSION
 	int ret;
