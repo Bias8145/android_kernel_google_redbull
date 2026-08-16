@@ -6,6 +6,14 @@
 # CONFIG_PM_DEBUG is not set
 # CONFIG_PM_SLEEP_MONITOR is not set
 
+# Generic kernel debugging / tracing not required in production.
+# CONFIG_DEBUG_KMEMLEAK is not set
+# CONFIG_DEBUG_OBJECTS is not set
+# CONFIG_DEBUG_NOTIFIERS is not set
+# CONFIG_DEBUG_KOBJECT_RELEASE is not set
+# CONFIG_LOCKDEP is not set
+# CONFIG_PROVE_LOCKING is not set
+
 # Thermal test/emulation only; real thermal protection remains enabled.
 # CONFIG_THERMAL_EMULATION is not set
 
