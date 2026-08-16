@@ -1,0 +1,115 @@
+name: Build Aegis-Core (Redbull A16 QPR2)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [Test]
+
+permissions:
+  contents: read
+
+env:
+  ARCH: arm64
+  SUBARCH: arm64
+  DEFCONFIG: redbull_defconfig
+  OUT_DIR: out
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout kernel
+        uses: actions/checkout@v4
+        with:
+          ref: Test
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache clang flex gcc-aarch64-linux-gnu git libelf-dev libssl-dev lld llvm python3 rsync unzip zip
+
+      - name: Prepare production config
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/llvm-14/bin:$PATH"
+          make O="$OUT_DIR" ARCH="$ARCH" "$DEFCONFIG"
+          if [[ -f arch/arm64/configs/redbull_production.fragment ]]; then
+            scripts/kconfig/merge_config.sh -m -O "$OUT_DIR" "$OUT_DIR/.config" arch/arm64/configs/redbull_production.fragment
+          fi
+          make O="$OUT_DIR" ARCH="$ARCH" olddefconfig
+          echo '--- config summary ---'
+          grep -E 'CONFIG_LOCALVERSION|CONFIG_KSU|CONFIG_KSU_SUSFS|CONFIG_DEBUG_KERNEL|CONFIG_KASAN|CONFIG_KCSAN' "$OUT_DIR/.config" || true
+
+      - name: Build kernel with LLVM
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/llvm-14/bin:$PATH"
+          make -j"$(nproc)" O="$OUT_DIR" ARCH="$ARCH" SUBARCH="$SUBARCH" \
+            CC=clang LLVM=1 LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            KCFLAGS='-Wno-error' \
+            2>&1 | tee build.log
+
+      - name: Validate kernel output
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$OUT_DIR/arch/arm64/boot/Image"
+          if [[ -f "$OUT_DIR/arch/arm64/boot/Image.gz-dtb" ]]; then
+            cp "$OUT_DIR/arch/arm64/boot/Image.gz-dtb" Aegis-Core-Image.gz-dtb
+          elif [[ -f "$OUT_DIR/arch/arm64/boot/Image.gz" ]]; then
+            cp "$OUT_DIR/arch/arm64/boot/Image.gz" Aegis-Core-Image.gz
+          else
+            echo 'No compressed kernel image found; inspect build output.'
+            exit 1
+          fi
+          find "$OUT_DIR" -type f -name '*.ko' -print > modules.list || true
+
+      - name: Package AnyKernel3 / Osmosis
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
+          rm -rf anykernel/.git
+          rm -f anykernel/Image* anykernel/*.dtb anykernel/*.zip
+          if [[ -f Aegis-Core-Image.gz-dtb ]]; then
+            cp Aegis-Core-Image.gz-dtb anykernel/Image.gz-dtb
+          else
+            cp "$OUT_DIR/arch/arm64/boot/Image.gz" anykernel/Image.gz
+          fi
+          if [[ -d "$OUT_DIR/lib/modules" ]]; then
+            mkdir -p anykernel/modules
+            cp -a "$OUT_DIR/lib/modules/." anykernel/modules/ || true
+          fi
+          cat > anykernel/anykernel.sh <<'AK'
+# AnyKernel3 Ramdisk Mod Script
+properties() { 
+  kernel.string=Aegis-Core
+  do.devicecheck=0
+  do.modules=1
+  do.systemless=0
+  do.cleanup=1
+  do.cleanuponabort=0
+  device.name1=redbull
+  device.name2=b1c1
+  supported.versions=16
+}
+. tools/ak3-core.sh
+AK
+          (cd anykernel && zip -r9 "../Aegis-Core-Redbull-A16-QPR2-${GITHUB_RUN_NUMBER}.zip" . -x '*.git*' '*.DS_Store')
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Aegis-Core-Redbull-A16-QPR2-${{ github.run_number }}
+          path: |
+            Aegis-Core-Redbull-A16-QPR2-*.zip
+            Aegis-Core-Image.gz-dtb
+            build.log
+            modules.list
+          if-no-files-found: error
