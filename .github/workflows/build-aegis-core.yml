@@ -87,20 +87,20 @@ jobs:
             cp -a "$OUT_DIR/lib/modules/." anykernel/modules/ || true
           fi
           cat > anykernel/anykernel.sh <<'AK'
-# AnyKernel3 Ramdisk Mod Script
-properties() { 
-  kernel.string=Aegis-Core
-  do.devicecheck=0
-  do.modules=1
-  do.systemless=0
-  do.cleanup=1
-  do.cleanuponabort=0
-  device.name1=redbull
-  device.name2=b1c1
-  supported.versions=16
-}
-. tools/ak3-core.sh
-AK
+          # AnyKernel3 Ramdisk Mod Script
+          properties() {
+            kernel.string=Aegis-Core
+            do.devicecheck=0
+            do.modules=1
+            do.systemless=0
+            do.cleanup=1
+            do.cleanuponabort=0
+            device.name1=redbull
+            device.name2=b1c1
+            supported.versions=16
+          }
+          . tools/ak3-core.sh
+          AK
           (cd anykernel && zip -r9 "../Aegis-Core-Redbull-A16-QPR2-${GITHUB_RUN_NUMBER}.zip" . -x '*.git*' '*.DS_Store')
 
       - name: Upload build artifacts
