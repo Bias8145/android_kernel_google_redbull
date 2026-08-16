@@ -1,0 +1,26 @@
+# Production-efficiency fragment for Redbull 4.19
+# Keep hardware limits, thermal policy, KSU/SUSFS and normal diagnostics intact.
+# Apply on top of redbull_defconfig for production builds.
+
+# Development / sleep-debug instrumentation
+# CONFIG_PM_DEBUG is not set
+# CONFIG_PM_SLEEP_MONITOR is not set
+
+# Thermal test/emulation only; real thermal protection remains enabled.
+# CONFIG_THERMAL_EMULATION is not set
+
+# Media test drivers are not needed on the production device.
+# CONFIG_V4L_TEST_DRIVERS is not set
+
+# USB compliance/link-layer test features are development-only.
+# CONFIG_USB_EHSET_TEST_FIXTURE is not set
+# CONFIG_USB_LINK_LAYER_TEST is not set
+
+# Input debugging only.
+# CONFIG_INPUT_KEYDEBUG is not set
+
+# Kernel printk-to-tty test/debug path only.
+# CONFIG_TTY_PRINTK is not set
+
+# UFS command debug logging; normal UFS error reporting remains enabled.
+# CONFIG_SCSI_UFSHCD_CMD_LOGGING is not set
