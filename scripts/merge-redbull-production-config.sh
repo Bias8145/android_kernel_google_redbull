@@ -13,10 +13,14 @@ OUT=${OUT:-out}
 [ -f "$FRAGMENT" ] || { echo "Missing $FRAGMENT" >&2; exit 1; }
 
 mkdir -p "$OUT"
-cp "$BASE" "$OUT/.config"
 
-# Kernel 4.19's merge_config.sh handles fragments and preserves dependency
-# resolution through the normal olddefconfig pass.
+# Always start from the actual redbull_defconfig target. This avoids treating
+# the defconfig text as an already-resolved .config and lets Kconfig establish
+# the correct dependency baseline before the production fragment is merged.
+make O="$OUT" ARCH="$ARCH" redbull_defconfig
+
+# Kernel 4.19's merge_config.sh handles fragments and then olddefconfig
+# resolves dependencies introduced by the production settings.
 scripts/kconfig/merge_config.sh -m -O "$OUT" "$OUT/.config" "$FRAGMENT"
 make O="$OUT" ARCH="$ARCH" olddefconfig
 
