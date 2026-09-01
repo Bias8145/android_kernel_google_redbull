@@ -2,7 +2,7 @@
 VERSION = 4
 PATCHLEVEL = 19
 SUBLEVEL = 325
-EXTRAVERSION = -Morpheus-plus
+EXTRAVERSION = -Aegis-Core
 NAME = "People's Front"
 
 # *DOCUMENTATION*
