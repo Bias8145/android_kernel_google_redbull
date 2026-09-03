@@ -73,7 +73,7 @@ UTS_TRUNCATE="cut -b -$UTS_LEN"
   echo \#define LINUX_COMPILE_BY \"khaliq\"
   echo \#define LINUX_COMPILE_HOST \"morpheus-labs\"
 
-  echo \#define LINUX_COMPILER \"WeebX-Proton Version 19.1.5\"
+  echo \#define LINUX_COMPILER \"Neutron Clang 24.0.0\"
 
 ) > .tmpcompile
 
