@@ -17,10 +17,12 @@ env:
   OUT_DIR: out
   DEFCONFIG: redbull_defconfig
   AK3_COMMIT: af770f7b16cf8f8eb7c68614b2a693b3b361c90c
+  DTS_REPO: https://github.com/LineageOS/android_kernel_google_redbull.git
+  DTS_REF: lineage-23.2
 
 jobs:
   build:
-    name: Build redbull kernel + AnyKernel3
+    name: Build redbull kernel + DTB + AnyKernel3
     runs-on: ubuntu-24.04
 
     steps:
@@ -32,19 +34,40 @@ jobs:
 
       - name: Install build dependencies
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential cpio flex libelf-dev libssl-dev \
+            bc bison build-essential cpio flex git libelf-dev libssl-dev \
             lz4 zip unzip python3 clang lld llvm binutils-aarch64-linux-gnu
           clang --version
           ld.lld --version
           aarch64-linux-gnu-ld --version
           lz4 --version
 
+      - name: Restore Google DTB sources
+        run: |
+          set -euo pipefail
+          rm -rf dts-source
+          git clone --filter=blob:none --no-checkout --depth=1 \
+            --branch "${DTS_REF}" "${DTS_REPO}" dts-source
+          cd dts-source
+          git sparse-checkout init --cone
+          git sparse-checkout set arch/arm64/boot/dts
+          git checkout --detach FETCH_HEAD
+          cd ..
+          test -f dts-source/arch/arm64/boot/dts/Makefile
+          test -f dts-source/arch/arm64/boot/dts/google/Makefile
+          rm -rf arch/arm64/boot/dts
+          mkdir -p arch/arm64/boot
+          cp -a dts-source/arch/arm64/boot/dts arch/arm64/boot/
+          test -f arch/arm64/boot/dts/google/qcom-base/lito.dtb 2>/dev/null || true
+          test -d arch/arm64/boot/dts/google
+          echo "DTB source tree restored from ${DTS_REPO}@${DTS_REF}"
+
       - name: Verify ARM64 toolchain
         run: |
           set -euo pipefail
-          clang --target=aarch64-linux-gnu -dumpmachine
+          test "$(clang --target=aarch64-linux-gnu -dumpmachine)" = "aarch64-unknown-linux-gnu"
           aarch64-linux-gnu-ld -V
 
       - name: Configure kernel
@@ -53,26 +76,45 @@ jobs:
           make O="${OUT_DIR}" ARCH="${ARCH}" LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" "${DEFCONFIG}"
           test -f "${OUT_DIR}/.config"
           grep -q '^CONFIG_ARM64=y' "${OUT_DIR}/.config"
+          grep -q '^CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y' "${OUT_DIR}/.config"
+          grep -q '^CONFIG_BUILD_ARM64_DT_OVERLAY=y' "${OUT_DIR}/.config"
           echo "Using branch: test-24.0"
           echo "Using defconfig: ${DEFCONFIG}"
-          grep -E '^(CONFIG_LOCALVERSION|CONFIG_BUILD_SALT|CONFIG_KALLSYMS|CONFIG_DEBUG_INFO_BTF|CONFIG_KSU|CONFIG_KSU_SUSFS)=' "${OUT_DIR}/.config" || true
+          grep -E '^(CONFIG_LOCALVERSION|CONFIG_BUILD_SALT|CONFIG_KALLSYMS|CONFIG_DEBUG_INFO_BTF|CONFIG_KSU|CONFIG_KSU_SUSFS|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE|CONFIG_BUILD_ARM64_DT_OVERLAY)=' "${OUT_DIR}/.config" || true
 
-      - name: Build kernel
+      - name: Build kernel, DTBs and DTBO
         run: |
           set -euo pipefail
-          make -j"$(nproc)" O="${OUT_DIR}" ARCH="${ARCH}" LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" Image
-          test -f "${OUT_DIR}/arch/arm64/boot/Image"
+          make -j"$(nproc)" \
+            O="${OUT_DIR}" \
+            ARCH="${ARCH}" \
+            LLVM="${LLVM}" \
+            LLVM_IAS="${LLVM_IAS}" \
+            CROSS_COMPILE="${CROSS_COMPILE}" \
+            dtbs Image.lz4-dtb \
+            dtbo.img dtbo_bramble.img dtbo_redfin.img dtbo_barbet.img
 
-      - name: Compress kernel
+          test -s "${OUT_DIR}/arch/arm64/boot/Image"
+          test -s "${OUT_DIR}/arch/arm64/boot/Image.lz4-dtb"
+          test -s "${OUT_DIR}/arch/arm64/boot/dtbo.img"
+          test -s "${OUT_DIR}/arch/arm64/boot/dtbo_bramble.img"
+          test -s "${OUT_DIR}/arch/arm64/boot/dtbo_redfin.img"
+          test -s "${OUT_DIR}/arch/arm64/boot/dtbo_barbet.img"
+
+      - name: Validate appended DTB
         run: |
           set -euo pipefail
-          lz4 -l -9 -f \
-            "${OUT_DIR}/arch/arm64/boot/Image" \
-            "${OUT_DIR}/arch/arm64/boot/Image.lz4"
+          lz4 -d -f \
+            "${OUT_DIR}/arch/arm64/boot/Image.lz4-dtb" \
+            /tmp/Image.dtb
           python3 - <<'PY'
           from pathlib import Path
-          magic = Path("out/arch/arm64/boot/Image.lz4").read_bytes()[:4]
-          assert magic == b"\x02\x21\x4c\x18", f"unexpected LZ4 magic: {magic!r}"
+          data = Path('/tmp/Image.dtb').read_bytes()
+          magic = b'\xd0\x0d\xfe\xed'
+          pos = data.find(magic)
+          assert pos >= 0, 'no flattened device tree found in Image.lz4-dtb'
+          print(f'Image.lz4-dtb contains DTB at offset 0x{pos:x}')
+          print(f'Decompressed size: {len(data)} bytes')
           PY
 
       - name: Prepare AnyKernel3
@@ -83,10 +125,12 @@ jobs:
           cd ak3
           git fetch --depth=1 origin "${AK3_COMMIT}"
           git checkout --detach "${AK3_COMMIT}"
-          cp "../${OUT_DIR}/arch/arm64/boot/Image.lz4" ./Image.lz4
+
+          # Pixel redbull boot.img is header v3 and carries no normal boot ramdisk.
+          # Use the DTB-backed kernel and only replace the kernel payload in the
+          # existing boot image. Do not rebuild/remove the device's ramdisk.
+          cp "../${OUT_DIR}/arch/arm64/boot/Image.lz4-dtb" ./Image.lz4-dtb
           rm -rf ramdisk vendor_ramdisk modules patch
-          mkdir -p ramdisk
-          touch ramdisk/placeholder
 
           cat > anykernel.sh <<'AK3'
           ### AnyKernel3 Ramdisk Mod Script
@@ -102,8 +146,6 @@ jobs:
           device.name1=bramble
           device.name2=redfin
           device.name3=barbet
-          device.name4=
-          device.name5=
           supported.versions=16,17
           supported.patchlevels=
           supported.vendorpatchlevels=
@@ -116,8 +158,11 @@ jobs:
 
           . tools/ak3-core.sh
 
-          dump_boot
-          write_boot
+          # Android boot header v3 has no boot ramdisk. split_boot() reads the
+          # existing boot header/kernel without attempting to unpack a ramdisk;
+          # flash_boot() then replaces only the kernel payload.
+          split_boot
+          flash_boot
           AK3
 
           sed -i 's/^[[:space:]]*//' anykernel.sh
@@ -125,34 +170,47 @@ jobs:
           bash -n anykernel.sh
 
           echo "--- AK3 configuration ---"
-          grep -E 'kernel.string|device.name|supported.versions|BLOCK=|IS_SLOT_DEVICE|RAMDISK_COMPRESSION|PATCH_VBMETA_FLAG' anykernel.sh
+          grep -E 'kernel.string|device.name|supported.versions|BLOCK=|IS_SLOT_DEVICE|RAMDISK_COMPRESSION|PATCH_VBMETA_FLAG|split_boot|flash_boot' anykernel.sh
 
       - name: Validate AnyKernel3 package
         run: |
           set -euo pipefail
-          test -f ak3/Image.lz4
+          test -f ak3/Image.lz4-dtb
           test -f ak3/anykernel.sh
           test -f ak3/tools/ak3-core.sh
           test -f ak3/META-INF/com/google/android/update-binary
           test -f ak3/LICENSE
+          ! test -e ak3/Image.lz4
           cd ak3
           zip -q -r9 ../redbull-test-24.0-LunarEclipse.zip . \
-            -x '.git/*' 'README.md' '*placeholder'
+            -x '.git/*' 'README.md'
           cd ..
           unzip -t redbull-test-24.0-LunarEclipse.zip >/dev/null
-          unzip -l redbull-test-24.0-LunarEclipse.zip | grep -E '(^|/)Image\.lz4$|(^|/)anykernel\.sh$|META-INF/com/google/android/update-binary|(^|/)LICENSE$'
+          unzip -l redbull-test-24.0-LunarEclipse.zip | grep -E '(^|/)Image\.lz4-dtb$|(^|/)anykernel\.sh$|META-INF/com/google/android/update-binary|(^|/)LICENSE$'
 
       - name: Collect build information
         run: |
           set -euo pipefail
           mkdir -p artifacts
           cp "${OUT_DIR}/arch/arm64/boot/Image" artifacts/Image
-          cp "${OUT_DIR}/arch/arm64/boot/Image.lz4" artifacts/Image.lz4
+          cp "${OUT_DIR}/arch/arm64/boot/Image.lz4-dtb" artifacts/Image.lz4-dtb
+          cp "${OUT_DIR}/arch/arm64/boot/dtbo.img" artifacts/dtbo.img
+          cp "${OUT_DIR}/arch/arm64/boot/dtbo_bramble.img" artifacts/dtbo_bramble.img
+          cp "${OUT_DIR}/arch/arm64/boot/dtbo_redfin.img" artifacts/dtbo_redfin.img
+          cp "${OUT_DIR}/arch/arm64/boot/dtbo_barbet.img" artifacts/dtbo_barbet.img
           cp redbull-test-24.0-LunarEclipse.zip artifacts/redbull-test-24.0-LunarEclipse.zip
           cp "${OUT_DIR}/.config" artifacts/.config
           git rev-parse HEAD > artifacts/git-commit.txt
           make O="${OUT_DIR}" ARCH="${ARCH}" LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" kernelversion > artifacts/kernel-version.txt
-          sha256sum artifacts/Image artifacts/Image.lz4 artifacts/redbull-test-24.0-LunarEclipse.zip artifacts/.config > artifacts/SHA256SUMS
+          sha256sum \
+            artifacts/Image \
+            artifacts/Image.lz4-dtb \
+            artifacts/dtbo.img \
+            artifacts/dtbo_bramble.img \
+            artifacts/dtbo_redfin.img \
+            artifacts/dtbo_barbet.img \
+            artifacts/redbull-test-24.0-LunarEclipse.zip \
+            artifacts/.config > artifacts/SHA256SUMS
           echo "--- Kernel version ---"
           cat artifacts/kernel-version.txt
           echo "--- Artifacts ---"
