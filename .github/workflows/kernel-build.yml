@@ -51,6 +51,11 @@ jobs:
           chmod +x antman
           ./antman -S="${NEUTRON_VERSION}"
 
+          # Neutron 30072026 is built against a newer glibc than Ubuntu 24.04
+          # provides. Patch the synced toolchain so clang/LLD use the bundled
+          # compatible glibc/glibcxx instead of the host libraries.
+          ./antman --patch=glibc
+
           for tool in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip aarch64-linux-gnu-ld; do
             test -x "$TOOLCHAIN_DIR/bin/$tool"
           done
@@ -174,9 +179,6 @@ jobs:
           supported.vendorpatchlevels=
           }
 
-          # AnyKernel3 resolves the active A/B suffix from IS_SLOT_DEVICE=1.
-          # Do not manually append a suffix; the AK3 core handles this before
-          # split_boot/flash_boot and selects the active slot by default.
           BLOCK=/dev/block/bootdevice/by-name/boot
           IS_SLOT_DEVICE=1
           SLOT_SELECT=active
@@ -185,7 +187,6 @@ jobs:
 
           . tools/ak3-core.sh
 
-          # Kernel-only package: boot is the only partition ever targeted.
           case "$BLOCK" in
             */boot_a|*/boot_b) ;;
             *) abort "Resolved boot target is invalid: $BLOCK";;
@@ -215,8 +216,6 @@ jobs:
           [ -s "$BOOTIMG" ] || abort "Original boot image dump is empty. Aborting..."
           [ -s "$SPLITIMG/kernel.gz" ] || abort "Original kernel was not extracted. Aborting..."
 
-          # Do not unpack/repack the ramdisk here. flash_boot replaces only
-          # the kernel while retaining the original boot components.
           flash_boot
 
           [ -s "$AKHOME/boot-new.img" ] || abort "Rebuilt boot image is missing. Aborting..."
@@ -233,7 +232,6 @@ jobs:
           chmod 755 anykernel.sh
           bash -n anykernel.sh
 
-          # Never ship an accidentally generated boot image or vendor target.
           ! grep -Eq '(^|[[:space:]])(vendor_boot|vendor_kernel_boot|vendor_dlkm|system_dlkm|dtbo)([[:space:];]|$)' anykernel.sh
           grep -q '^BLOCK=/dev/block/bootdevice/by-name/boot$' anykernel.sh
           grep -q '^IS_SLOT_DEVICE=1$' anykernel.sh
