@@ -54,7 +54,22 @@ jobs:
           # Neutron 30072026 is built against a newer glibc than Ubuntu 24.04
           # provides. Patch the synced toolchain so clang/LLD use the bundled
           # compatible glibc/glibcxx instead of the host libraries.
-          ./antman --patch=glibc
+          # AntMan may return 1 after applying the patch successfully; treat
+          # that case as success only when its success marker is present.
+          PATCH_LOG="$RUNNER_TEMP/neutron-glibc-patch.log"
+          set +e
+          ./antman --patch=glibc 2>&1 | tee "$PATCH_LOG"
+          PATCH_RC=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$PATCH_RC" -ne 0 ]; then
+            if grep -q 'SUCCESS: glibc compatibility patch applied successfully' "$PATCH_LOG"; then
+              echo "AntMan returned $PATCH_RC, but glibc patch completed successfully. Continuing."
+            else
+              echo "ERROR: Neutron glibc compatibility patch failed (exit $PATCH_RC)."
+              exit "$PATCH_RC"
+            fi
+          fi
 
           for tool in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip aarch64-linux-gnu-ld; do
             test -x "$TOOLCHAIN_DIR/bin/$tool"
