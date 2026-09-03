@@ -17,6 +17,7 @@ env:
   OUT_DIR: out
   DEFCONFIG: redbull_defconfig
   AK3_COMMIT: af770f7b16cf8f8eb7c68614b2a693b3b361c90c
+  NEUTRON_VERSION: 30072026
 
 jobs:
   build:
@@ -36,15 +37,50 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential cpio flex git libelf-dev libssl-dev \
-            lz4 zip unzip python3 clang lld llvm binutils-aarch64-linux-gnu kmod
-          clang --version
-          ld.lld --version
-          aarch64-linux-gnu-ld --version
+            lz4 zip unzip python3 curl kmod
           lz4 --version
 
-      - name: Verify ARM64 toolchain
+      - name: Setup Neutron Clang
         run: |
           set -euo pipefail
+          TOOLCHAIN_DIR="$RUNNER_TEMP/neutron-clang"
+          mkdir -p "$TOOLCHAIN_DIR"
+          cd "$TOOLCHAIN_DIR"
+
+          curl -fsSLO "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman"
+          chmod +x antman
+          ./antman -S="${NEUTRON_VERSION}"
+
+          test -x "$TOOLCHAIN_DIR/bin/clang"
+          test -x "$TOOLCHAIN_DIR/bin/ld.lld"
+          test -x "$TOOLCHAIN_DIR/bin/llvm-ar"
+          test -x "$TOOLCHAIN_DIR/bin/llvm-nm"
+          test -x "$TOOLCHAIN_DIR/bin/llvm-objcopy"
+          test -x "$TOOLCHAIN_DIR/bin/llvm-objdump"
+          test -x "$TOOLCHAIN_DIR/bin/llvm-strip"
+          test -x "$TOOLCHAIN_DIR/bin/aarch64-linux-gnu-ld"
+
+          echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+          echo "NEUTRON_TOOLCHAIN=$TOOLCHAIN_DIR" >> "$GITHUB_ENV"
+
+      - name: Verify Neutron toolchain
+        run: |
+          set -euo pipefail
+          test "$(command -v clang)" = "${NEUTRON_TOOLCHAIN}/bin/clang"
+          test "$(command -v ld.lld)" = "${NEUTRON_TOOLCHAIN}/bin/ld.lld"
+          test "$(command -v llvm-ar)" = "${NEUTRON_TOOLCHAIN}/bin/llvm-ar"
+          test "$(command -v llvm-nm)" = "${NEUTRON_TOOLCHAIN}/bin/llvm-nm"
+          test "$(command -v llvm-objcopy)" = "${NEUTRON_TOOLCHAIN}/bin/llvm-objcopy"
+          test "$(command -v llvm-objdump)" = "${NEUTRON_TOOLCHAIN}/bin/llvm-objdump"
+          test "$(command -v llvm-strip)" = "${NEUTRON_TOOLCHAIN}/bin/llvm-strip"
+          test "$(command -v aarch64-linux-gnu-ld)" = "${NEUTRON_TOOLCHAIN}/bin/aarch64-linux-gnu-ld"
+
+          clang --version
+          ld.lld --version
+          llvm-ar --version
+          llvm-nm --version
+          aarch64-linux-gnu-ld --version
+
           test "$(clang --target=aarch64-linux-gnu -dumpmachine)" = "aarch64-unknown-linux-gnu"
           aarch64-linux-gnu-ld -V
 
@@ -53,6 +89,7 @@ jobs:
           set -euo pipefail
           make O="${OUT_DIR}" \
             ARCH="${ARCH}" \
+            CC=clang \
             LLVM="${LLVM}" \
             LLVM_IAS="${LLVM_IAS}" \
             CROSS_COMPILE="${CROSS_COMPILE}" \
@@ -63,6 +100,7 @@ jobs:
 
           echo "Using branch: test-24.0"
           echo "Using defconfig: ${DEFCONFIG}"
+          echo "Using Neutron Clang: ${NEUTRON_VERSION}"
           grep -E '^(CONFIG_LOCALVERSION|CONFIG_BUILD_SALT|CONFIG_KALLSYMS|CONFIG_DEBUG_INFO_BTF|CONFIG_KSU|CONFIG_KSU_SUSFS|CONFIG_KERNEL_LZ4|CONFIG_MODULES|CONFIG_MODVERSIONS)=' "${OUT_DIR}/.config" || true
 
       - name: Build kernel
@@ -71,6 +109,7 @@ jobs:
           make -j"$(nproc)" \
             O="${OUT_DIR}" \
             ARCH="${ARCH}" \
+            CC=clang \
             LLVM="${LLVM}" \
             LLVM_IAS="${LLVM_IAS}" \
             CROSS_COMPILE="${CROSS_COMPILE}" \
@@ -86,6 +125,7 @@ jobs:
             make -j"$(nproc)" \
               O="${OUT_DIR}" \
               ARCH="${ARCH}" \
+              CC=clang \
               LLVM="${LLVM}" \
               LLVM_IAS="${LLVM_IAS}" \
               CROSS_COMPILE="${CROSS_COMPILE}" \
@@ -101,7 +141,7 @@ jobs:
             module_count="${#modules[@]}"
             test "${module_count}" -gt 0
 
-            kernel_release="$(make -s O="${OUT_DIR}" ARCH="${ARCH}" LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" kernelrelease)"
+            kernel_release="$(make -s O="${OUT_DIR}" ARCH="${ARCH}" CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" kernelrelease)"
             test -n "${kernel_release}"
             echo "Kernel release: ${kernel_release}"
 
@@ -289,14 +329,19 @@ jobs:
           cp "${OUT_DIR}/.config" artifacts/.config
 
           git rev-parse HEAD > artifacts/git-commit.txt
+          printf 'Neutron Clang %s\n' "${NEUTRON_VERSION}" > artifacts/toolchain.txt
+          clang --version > artifacts/clang-version.txt
+          ld.lld --version > artifacts/lld-version.txt
           make -s O="${OUT_DIR}" \
             ARCH="${ARCH}" \
+            CC=clang \
             LLVM="${LLVM}" \
             LLVM_IAS="${LLVM_IAS}" \
             CROSS_COMPILE="${CROSS_COMPILE}" \
             kernelversion > artifacts/kernel-version.txt
           make -s O="${OUT_DIR}" \
             ARCH="${ARCH}" \
+            CC=clang \
             LLVM="${LLVM}" \
             LLVM_IAS="${LLVM_IAS}" \
             CROSS_COMPILE="${CROSS_COMPILE}" \
@@ -332,6 +377,10 @@ jobs:
             artifacts/redbull-test-24.0-LunarEclipse.zip \
             artifacts/.config > artifacts/SHA256SUMS
 
+          echo "--- Toolchain ---"
+          cat artifacts/toolchain.txt
+          cat artifacts/clang-version.txt
+          cat artifacts/lld-version.txt
           echo "--- Kernel version ---"
           cat artifacts/kernel-version.txt
           echo "--- Kernel release ---"
