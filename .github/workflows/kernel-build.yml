@@ -54,17 +54,19 @@ jobs:
           # Neutron 30072026 is built against a newer glibc than Ubuntu 24.04
           # provides. Patch the synced toolchain so clang/LLD use the bundled
           # compatible glibc/glibcxx instead of the host libraries.
-          # AntMan may return 1 after applying the patch successfully; treat
-          # that case as success only when its success marker is present.
+          # Run the patch command in an if-condition so Bash set -e cannot
+          # terminate the step before its exit status can be inspected.
           PATCH_LOG="$RUNNER_TEMP/neutron-glibc-patch.log"
-          set +e
-          ./antman --patch=glibc 2>&1 | tee "$PATCH_LOG"
-          PATCH_RC=${PIPESTATUS[0]}
-          set -e
+          if ./antman --patch=glibc >"$PATCH_LOG" 2>&1; then
+            PATCH_RC=0
+          else
+            PATCH_RC=$?
+          fi
+          cat "$PATCH_LOG"
 
           if [ "$PATCH_RC" -ne 0 ]; then
-            if grep -q 'SUCCESS: glibc compatibility patch applied successfully' "$PATCH_LOG"; then
-              echo "AntMan returned $PATCH_RC, but glibc patch completed successfully. Continuing."
+            if grep -Fq 'SUCCESS: glibc compatibility patch applied successfully' "$PATCH_LOG"; then
+              echo "AntMan returned $PATCH_RC after a successful glibc patch; continuing."
             else
               echo "ERROR: Neutron glibc compatibility patch failed (exit $PATCH_RC)."
               exit "$PATCH_RC"
