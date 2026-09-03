@@ -97,19 +97,35 @@ jobs:
 
             test -s "${OUT_DIR}/modules.order"
 
-            module_count="$(find "${OUT_DIR}" -type f -name '*.ko' | wc -l)"
+            mapfile -t modules < <(find "${OUT_DIR}" -type f -name '*.ko' | sort)
+            module_count="${#modules[@]}"
             test "${module_count}" -gt 0
 
-            while IFS= read -r module; do
+            kernel_release="$(make -s O="${OUT_DIR}" ARCH="${ARCH}" LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" kernelrelease)"
+            test -n "${kernel_release}"
+            echo "Kernel release: ${kernel_release}"
+
+            mismatched=0
+            for module in "${modules[@]}"; do
               test -s "${module}"
               vermagic="$(modinfo -F vermagic "${module}" 2>/dev/null || true)"
-              if [ -n "${vermagic}" ]; then
-                echo "$(basename "${module}"): ${vermagic}"
-              else
-                echo "$(basename "${module}"): vermagic unavailable"
+              if [ -z "${vermagic}" ]; then
+                echo "ERROR: unable to read vermagic: ${module}"
+                mismatched=1
+                continue
               fi
-            done < <(find "${OUT_DIR}" -type f -name '*.ko' | sort)
 
+              echo "$(basename "${module}"): ${vermagic}"
+              case " ${vermagic} " in
+                *" ${kernel_release} "*) ;;
+                *)
+                  echo "ERROR: vermagic does not contain kernel release ${kernel_release}: ${module}"
+                  mismatched=1
+                  ;;
+              esac
+            done
+
+            test "${mismatched}" -eq 0
             echo "Built in-tree modules: ${module_count}"
           else
             echo "CONFIG_MODULES is disabled; no kernel modules expected."
@@ -177,18 +193,20 @@ jobs:
 
           . tools/ak3-core.sh
 
-          # Safety gate: this package is kernel-only and must never target
-          # vendor_boot, vendor_kernel_boot, vendor_dlkm, or system_dlkm.
+          # This package is intentionally kernel-only. Never target a vendor
+          # partition or inject modules into the live system from this ZIP.
           case "$BLOCK" in
           */boot) ;;
           *) abort "Unexpected target partition: $BLOCK";;
           esac
 
           DEVICE=$(getprop ro.product.device 2>/dev/null)
+          BUILD_PRODUCT=$(getprop ro.build.product 2>/dev/null)
           VENDOR_DEVICE=$(getprop ro.product.vendor.device 2>/dev/null)
-          case "$DEVICE $VENDOR_DEVICE" in
+          VENDOR_PRODUCT=$(getprop ro.vendor.product.device 2>/dev/null)
+          case "$DEVICE $BUILD_PRODUCT $VENDOR_DEVICE $VENDOR_PRODUCT" in
           *bramble*|*redfin*|*barbet*) ;;
-          *) abort "Unsupported device: $DEVICE / $VENDOR_DEVICE";;
+          *) abort "Unsupported device: $DEVICE / $BUILD_PRODUCT / $VENDOR_DEVICE / $VENDOR_PRODUCT";;
           esac
 
           SLOT=$(getprop ro.boot.slot_suffix 2>/dev/null)
@@ -207,17 +225,18 @@ jobs:
 
           split_boot
 
-          # split_boot must leave a real source boot image and a ramdisk.
+          # split_boot must have produced the original boot image and the
+          # Android boot header/kernel/ramdisk components needed by flash_boot.
           [ -s "$BOOTIMG" ] || abort "Original boot image dump is empty. Aborting..."
-          [ -s "$SPLITIMG/kernel.gz" ] || [ -s "$SPLITIMG/kernel" ] || abort "Original kernel was not extracted. Aborting..."
-          [ -s "$SPLITIMG/ramdisk.cpio.gz" ] || [ -s "$SPLITIMG/ramdisk.cpio" ] || abort "Original ramdisk was not extracted. Aborting..."
+          [ -s "$SPLITIMG/kernel.gz" ] || abort "Original kernel was not extracted. Aborting..."
+          [ -s "$SPLITIMG/ramdisk.cpio.gz" ] || abort "Original ramdisk was not extracted. Aborting..."
 
           flash_boot
 
-          # flash_boot has its own size/write checks; retain an explicit
-          # postcondition so a failed/empty generated image cannot continue.
           [ -s "$AKHOME/boot-new.img" ] || abort "No valid rebuilt boot image exists. Aborting..."
           NEW_SIZE=$(wc -c < "$AKHOME/boot-new.img")
+          ORIGINAL_SIZE=$(wc -c < "$BOOTIMG")
+          [ "$NEW_SIZE" -le "$ORIGINAL_SIZE" ] || abort "Rebuilt boot image exceeds original boot image size. Aborting..."
           [ "$NEW_SIZE" -le "$TARGET_SIZE" ] || abort "Rebuilt boot image exceeds target partition. Aborting..."
           ui_print "Rebuilt boot: $NEW_SIZE bytes"
           AK3
@@ -270,12 +289,18 @@ jobs:
           cp "${OUT_DIR}/.config" artifacts/.config
 
           git rev-parse HEAD > artifacts/git-commit.txt
-          make O="${OUT_DIR}" \
+          make -s O="${OUT_DIR}" \
             ARCH="${ARCH}" \
             LLVM="${LLVM}" \
             LLVM_IAS="${LLVM_IAS}" \
             CROSS_COMPILE="${CROSS_COMPILE}" \
             kernelversion > artifacts/kernel-version.txt
+          make -s O="${OUT_DIR}" \
+            ARCH="${ARCH}" \
+            LLVM="${LLVM}" \
+            LLVM_IAS="${LLVM_IAS}" \
+            CROSS_COMPILE="${CROSS_COMPILE}" \
+            kernelrelease > artifacts/kernel-release.txt
 
           if [ -f "${OUT_DIR}/Module.symvers" ]; then
             cp "${OUT_DIR}/Module.symvers" artifacts/Module.symvers
@@ -284,6 +309,7 @@ jobs:
             cp "${OUT_DIR}/modules.order" artifacts/modules.order
           fi
           find "${OUT_DIR}" -type f -name '*.ko' | sort > artifacts/modules.list
+          : > artifacts/modules.sha256
           if [ -s artifacts/modules.list ]; then
             while IFS= read -r module; do
               rel="${module#${OUT_DIR}/}"
@@ -308,6 +334,8 @@ jobs:
 
           echo "--- Kernel version ---"
           cat artifacts/kernel-version.txt
+          echo "--- Kernel release ---"
+          cat artifacts/kernel-release.txt
           echo "--- Module audit ---"
           cat artifacts/modules.list || true
           echo "--- Artifacts ---"
