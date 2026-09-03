@@ -1,0 +1,168 @@
+name: kernel-build
+
+on:
+  push:
+    branches:
+      - test-24.0
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ARCH: arm64
+  LLVM: 1
+  LLVM_IAS: 1
+  CROSS_COMPILE: aarch64-linux-gnu-
+  OUT_DIR: out
+  DEFCONFIG: redbull_defconfig
+  AK3_COMMIT: af770f7b16cf8f8eb7c68614b2a693b3b361c90c
+
+jobs:
+  build:
+    name: Build redbull kernel + AnyKernel3
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: test-24.0
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential cpio flex libelf-dev libssl-dev \
+            lz4 zip unzip python3 clang lld llvm binutils-aarch64-linux-gnu
+          clang --version
+          ld.lld --version
+          aarch64-linux-gnu-ld --version
+          lz4 --version
+
+      - name: Verify ARM64 toolchain
+        run: |
+          set -euo pipefail
+          clang --target=aarch64-linux-gnu -dumpmachine
+          aarch64-linux-gnu-ld -V
+
+      - name: Configure kernel
+        run: |
+          set -euo pipefail
+          make O="${OUT_DIR}" ARCH="${ARCH}" LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" "${DEFCONFIG}"
+          test -f "${OUT_DIR}/.config"
+          grep -q '^CONFIG_ARM64=y' "${OUT_DIR}/.config"
+          echo "Using branch: test-24.0"
+          echo "Using defconfig: ${DEFCONFIG}"
+          grep -E '^(CONFIG_LOCALVERSION|CONFIG_BUILD_SALT|CONFIG_KALLSYMS|CONFIG_DEBUG_INFO_BTF|CONFIG_KSU|CONFIG_KSU_SUSFS)=' "${OUT_DIR}/.config" || true
+
+      - name: Build kernel
+        run: |
+          set -euo pipefail
+          make -j"$(nproc)" O="${OUT_DIR}" ARCH="${ARCH}" LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" Image
+          test -f "${OUT_DIR}/arch/arm64/boot/Image"
+
+      - name: Compress kernel
+        run: |
+          set -euo pipefail
+          lz4 -l -9 -f \
+            "${OUT_DIR}/arch/arm64/boot/Image" \
+            "${OUT_DIR}/arch/arm64/boot/Image.lz4"
+          python3 - <<'PY'
+          from pathlib import Path
+          magic = Path("out/arch/arm64/boot/Image.lz4").read_bytes()[:4]
+          assert magic == b"\x02\x21\x4c\x18", f"unexpected LZ4 magic: {magic!r}"
+          PY
+
+      - name: Prepare AnyKernel3
+        run: |
+          set -euo pipefail
+          rm -rf ak3
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3
+          cd ak3
+          git fetch --depth=1 origin "${AK3_COMMIT}"
+          git checkout --detach "${AK3_COMMIT}"
+          cp "../${OUT_DIR}/arch/arm64/boot/Image.lz4" ./Image.lz4
+          rm -rf ramdisk vendor_ramdisk modules patch
+          mkdir -p ramdisk
+          touch ramdisk/placeholder
+
+          cat > anykernel.sh <<'AK3'
+          ### AnyKernel3 Ramdisk Mod Script
+          ## osm0sis @ xda-developers
+
+          properties() {
+          kernel.string=Khaliq Kernel
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=bramble
+          device.name2=redfin
+          device.name3=barbet
+          device.name4=
+          device.name5=
+          supported.versions=16
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          }
+
+          BLOCK=/dev/block/bootdevice/by-name/boot
+          IS_SLOT_DEVICE=1
+          RAMDISK_COMPRESSION=auto
+          PATCH_VBMETA_FLAG=auto
+
+          . tools/ak3-core.sh
+
+          dump_boot
+          write_boot
+          AK3
+
+          sed -i 's/^[[:space:]]*//' anykernel.sh
+          chmod 755 anykernel.sh
+          bash -n anykernel.sh
+
+          echo "--- AK3 configuration ---"
+          grep -E 'kernel.string|device.name|supported.versions|BLOCK=|IS_SLOT_DEVICE|RAMDISK_COMPRESSION|PATCH_VBMETA_FLAG' anykernel.sh
+
+      - name: Validate AnyKernel3 package
+        run: |
+          set -euo pipefail
+          test -f ak3/Image.lz4
+          test -f ak3/anykernel.sh
+          test -f ak3/tools/ak3-core.sh
+          test -f ak3/META-INF/com/google/android/update-binary
+          test -f ak3/LICENSE
+          cd ak3
+          zip -q -r9 ../redbull-test-24.0-LunarEclipse.zip . \
+            -x '.git/*' 'README.md' '*placeholder'
+          cd ..
+          unzip -t redbull-test-24.0-LunarEclipse.zip >/dev/null
+          unzip -l redbull-test-24.0-LunarEclipse.zip | grep -E '(^|/)Image\.lz4$|(^|/)anykernel\.sh$|META-INF/com/google/android/update-binary|(^|/)LICENSE$'
+
+      - name: Collect build information
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          cp "${OUT_DIR}/arch/arm64/boot/Image" artifacts/Image
+          cp "${OUT_DIR}/arch/arm64/boot/Image.lz4" artifacts/Image.lz4
+          cp redbull-test-24.0-LunarEclipse.zip artifacts/redbull-test-24.0-LunarEclipse.zip
+          cp "${OUT_DIR}/.config" artifacts/.config
+          git rev-parse HEAD > artifacts/git-commit.txt
+          make O="${OUT_DIR}" ARCH="${ARCH}" LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" kernelversion > artifacts/kernel-version.txt
+          sha256sum artifacts/Image artifacts/Image.lz4 artifacts/redbull-test-24.0-LunarEclipse.zip artifacts/.config > artifacts/SHA256SUMS
+          echo "--- Kernel version ---"
+          cat artifacts/kernel-version.txt
+          echo "--- Artifacts ---"
+          ls -lh artifacts/
+          echo "--- Checksums ---"
+          cat artifacts/SHA256SUMS
+
+      - name: Upload kernel and AK3 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: redbull-test-24.0-kernel-ak3-${{ github.sha }}
+          if-no-files-found: error
+          path: artifacts/
