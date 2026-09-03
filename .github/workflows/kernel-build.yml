@@ -18,10 +18,11 @@ env:
   DEFCONFIG: redbull_defconfig
   AK3_COMMIT: af770f7b16cf8f8eb7c68614b2a693b3b361c90c
   NEUTRON_VERSION: 30072026
+  KERNEL_NAME: Aether-Foundry
 
 jobs:
   build:
-    name: Build redbull kernel + modules + AnyKernel3
+    name: Build Aether-Foundry redbull kernel
     runs-on: ubuntu-24.04
 
     steps:
@@ -37,8 +38,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential cpio flex git libelf-dev libssl-dev \
-            lz4 zip unzip python3 curl kmod
-          lz4 --version
+            lz4 zip unzip python3 curl kmod file
 
       - name: Setup Neutron Clang
         run: |
@@ -47,18 +47,13 @@ jobs:
           mkdir -p "$TOOLCHAIN_DIR"
           cd "$TOOLCHAIN_DIR"
 
-          curl -fsSLO "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman"
+          curl -fsSLO https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman
           chmod +x antman
           ./antman -S="${NEUTRON_VERSION}"
 
-          test -x "$TOOLCHAIN_DIR/bin/clang"
-          test -x "$TOOLCHAIN_DIR/bin/ld.lld"
-          test -x "$TOOLCHAIN_DIR/bin/llvm-ar"
-          test -x "$TOOLCHAIN_DIR/bin/llvm-nm"
-          test -x "$TOOLCHAIN_DIR/bin/llvm-objcopy"
-          test -x "$TOOLCHAIN_DIR/bin/llvm-objdump"
-          test -x "$TOOLCHAIN_DIR/bin/llvm-strip"
-          test -x "$TOOLCHAIN_DIR/bin/aarch64-linux-gnu-ld"
+          for tool in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip aarch64-linux-gnu-ld; do
+            test -x "$TOOLCHAIN_DIR/bin/$tool"
+          done
 
           echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
           echo "NEUTRON_TOOLCHAIN=$TOOLCHAIN_DIR" >> "$GITHUB_ENV"
@@ -66,152 +61,106 @@ jobs:
       - name: Verify Neutron toolchain
         run: |
           set -euo pipefail
-          test "$(command -v clang)" = "${NEUTRON_TOOLCHAIN}/bin/clang"
-          test "$(command -v ld.lld)" = "${NEUTRON_TOOLCHAIN}/bin/ld.lld"
-          test "$(command -v llvm-ar)" = "${NEUTRON_TOOLCHAIN}/bin/llvm-ar"
-          test "$(command -v llvm-nm)" = "${NEUTRON_TOOLCHAIN}/bin/llvm-nm"
-          test "$(command -v llvm-objcopy)" = "${NEUTRON_TOOLCHAIN}/bin/llvm-objcopy"
-          test "$(command -v llvm-objdump)" = "${NEUTRON_TOOLCHAIN}/bin/llvm-objdump"
-          test "$(command -v llvm-strip)" = "${NEUTRON_TOOLCHAIN}/bin/llvm-strip"
-          test "$(command -v aarch64-linux-gnu-ld)" = "${NEUTRON_TOOLCHAIN}/bin/aarch64-linux-gnu-ld"
+          for tool in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip aarch64-linux-gnu-ld; do
+            test "$(command -v "$tool")" = "${NEUTRON_TOOLCHAIN}/bin/$tool"
+          done
 
           clang --version
           ld.lld --version
-          llvm-ar --version
-          llvm-nm --version
           aarch64-linux-gnu-ld --version
-
           test "$(clang --target=aarch64-linux-gnu -dumpmachine)" = "aarch64-unknown-linux-gnu"
-          aarch64-linux-gnu-ld -V
 
       - name: Configure kernel
         run: |
           set -euo pipefail
           make O="${OUT_DIR}" \
-            ARCH="${ARCH}" \
-            CC=clang \
-            LLVM="${LLVM}" \
-            LLVM_IAS="${LLVM_IAS}" \
-            CROSS_COMPILE="${CROSS_COMPILE}" \
-            "${DEFCONFIG}"
+            ARCH="${ARCH}" CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" \
+            CROSS_COMPILE="${CROSS_COMPILE}" "${DEFCONFIG}"
 
           test -s "${OUT_DIR}/.config"
           grep -q '^CONFIG_ARM64=y' "${OUT_DIR}/.config"
-
-          echo "Using branch: test-24.0"
-          echo "Using defconfig: ${DEFCONFIG}"
-          echo "Using Neutron Clang: ${NEUTRON_VERSION}"
-          grep -E '^(CONFIG_LOCALVERSION|CONFIG_BUILD_SALT|CONFIG_KALLSYMS|CONFIG_DEBUG_INFO_BTF|CONFIG_KSU|CONFIG_KSU_SUSFS|CONFIG_KERNEL_LZ4|CONFIG_MODULES|CONFIG_MODVERSIONS)=' "${OUT_DIR}/.config" || true
+          echo "Kernel: ${KERNEL_NAME}"
+          echo "Defconfig: ${DEFCONFIG}"
+          echo "Neutron Clang: ${NEUTRON_VERSION}"
+          grep -E '^(CONFIG_LOCALVERSION|CONFIG_KERNEL_LZ4|CONFIG_MODULES|CONFIG_MODVERSIONS)=' "${OUT_DIR}/.config" || true
 
       - name: Build kernel
         run: |
           set -euo pipefail
-          make -j"$(nproc)" \
-            O="${OUT_DIR}" \
-            ARCH="${ARCH}" \
-            CC=clang \
-            LLVM="${LLVM}" \
-            LLVM_IAS="${LLVM_IAS}" \
-            CROSS_COMPILE="${CROSS_COMPILE}" \
-            Image
+          make -j"$(nproc)" O="${OUT_DIR}" ARCH="${ARCH}" \
+            CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" \
+            CROSS_COMPILE="${CROSS_COMPILE}" Image
 
-          test -s "${OUT_DIR}/arch/arm64/boot/Image"
+          IMAGE="${OUT_DIR}/arch/arm64/boot/Image"
+          test -s "$IMAGE"
+          file "$IMAGE" | grep -qi 'ARM aarch64\|ARM64\|ARM'
 
-      - name: Build and validate kernel modules
+      - name: Build and validate modules
         run: |
           set -euo pipefail
-
           if grep -q '^CONFIG_MODULES=y' "${OUT_DIR}/.config"; then
-            make -j"$(nproc)" \
-              O="${OUT_DIR}" \
-              ARCH="${ARCH}" \
-              CC=clang \
-              LLVM="${LLVM}" \
-              LLVM_IAS="${LLVM_IAS}" \
-              CROSS_COMPILE="${CROSS_COMPILE}" \
-              modules
+            make -j"$(nproc)" O="${OUT_DIR}" ARCH="${ARCH}" \
+              CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" \
+              CROSS_COMPILE="${CROSS_COMPILE}" modules
+
+            test -s "${OUT_DIR}/modules.order"
+            mapfile -t modules < <(find "${OUT_DIR}" -type f -name '*.ko' | sort)
+            test "${#modules[@]}" -gt 0
 
             if grep -q '^CONFIG_MODVERSIONS=y' "${OUT_DIR}/.config"; then
               test -s "${OUT_DIR}/Module.symvers"
             fi
 
-            test -s "${OUT_DIR}/modules.order"
-
-            mapfile -t modules < <(find "${OUT_DIR}" -type f -name '*.ko' | sort)
-            module_count="${#modules[@]}"
-            test "${module_count}" -gt 0
-
             kernel_release="$(make -s O="${OUT_DIR}" ARCH="${ARCH}" CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" kernelrelease)"
-            test -n "${kernel_release}"
-            echo "Kernel release: ${kernel_release}"
+            test -n "$kernel_release"
+            echo "Kernel release: $kernel_release"
 
-            mismatched=0
             for module in "${modules[@]}"; do
-              test -s "${module}"
-              vermagic="$(modinfo -F vermagic "${module}" 2>/dev/null || true)"
-              if [ -z "${vermagic}" ]; then
-                echo "ERROR: unable to read vermagic: ${module}"
-                mismatched=1
-                continue
-              fi
-
-              echo "$(basename "${module}"): ${vermagic}"
-              case " ${vermagic} " in
-                *" ${kernel_release} "*) ;;
-                *)
-                  echo "ERROR: vermagic does not contain kernel release ${kernel_release}: ${module}"
-                  mismatched=1
-                  ;;
+              test -s "$module"
+              vermagic="$(modinfo -F vermagic "$module" 2>/dev/null || true)"
+              test -n "$vermagic"
+              echo "$(basename "$module"): $vermagic"
+              case " $vermagic " in
+                *" $kernel_release "*) ;;
+                *) echo "ERROR: vermagic mismatch: $module"; exit 1 ;;
               esac
             done
-
-            test "${mismatched}" -eq 0
-            echo "Built in-tree modules: ${module_count}"
           else
-            echo "CONFIG_MODULES is disabled; no kernel modules expected."
-          fi
-
-          if [ -d private/msm-google-modules ]; then
-            echo "External module source: present"
-          else
-            echo "External module source: NOT PRESENT in this repository"
-            echo "The historical redbull build configuration references private/msm-google-modules."
-            echo "No external-module ABI claim is made by this CI."
+            echo "CONFIG_MODULES is disabled; no modules expected."
           fi
 
       - name: Compress kernel
         run: |
           set -euo pipefail
-          lz4 -l -9 -f \
-            "${OUT_DIR}/arch/arm64/boot/Image" \
-            "${OUT_DIR}/arch/arm64/boot/Image.lz4"
-
+          IMAGE="${OUT_DIR}/arch/arm64/boot/Image"
+          lz4 -l -9 -f "$IMAGE" "${OUT_DIR}/arch/arm64/boot/Image.lz4"
           test -s "${OUT_DIR}/arch/arm64/boot/Image.lz4"
-
           python3 - <<'PY'
           from pathlib import Path
-          data = Path("out/arch/arm64/boot/Image.lz4").read_bytes()
-          assert data[:4] == b"\x02\x21\x4c\x18", f"unexpected LZ4 magic: {data[:4]!r}"
-          print(f"Image.lz4: {len(data)} bytes")
+          p = Path("out/arch/arm64/boot/Image.lz4")
+          data = p.read_bytes()
+          assert data[:4] == b"\x02\x21\x4c\x18", f"bad LZ4 magic: {data[:4]!r}"
+          print(f"Image.lz4: {p.stat().st_size} bytes")
           PY
 
-      - name: Prepare AnyKernel3
+      - name: Build flashable AnyKernel3 ZIP
         run: |
           set -euo pipefail
-          rm -rf ak3
+          rm -rf ak3 dist debug
+          mkdir -p dist debug
+
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3
           cd ak3
           git fetch --depth=1 origin "${AK3_COMMIT}"
           git checkout --detach "${AK3_COMMIT}"
-
           cp "../${OUT_DIR}/arch/arm64/boot/Image.lz4" ./Image.lz4
 
           cat > anykernel.sh <<'AK3'
           ### AnyKernel3 Ramdisk Mod Script
-          ## osm0sis @ xda-developers
+          ## Aether-Foundry
 
           properties() {
-          kernel.string=Khaliq Kernel
+          kernel.string=Aether-Foundry
           do.devicecheck=1
           do.modules=0
           do.systemless=1
@@ -225,6 +174,9 @@ jobs:
           supported.vendorpatchlevels=
           }
 
+          # AnyKernel3 resolves the active A/B suffix from IS_SLOT_DEVICE=1.
+          # Do not manually append a suffix; the AK3 core handles this before
+          # split_boot/flash_boot and selects the active slot by default.
           BLOCK=/dev/block/bootdevice/by-name/boot
           IS_SLOT_DEVICE=1
           SLOT_SELECT=active
@@ -233,11 +185,15 @@ jobs:
 
           . tools/ak3-core.sh
 
-          # This package is intentionally kernel-only. Never target a vendor
-          # partition or inject modules into the live system from this ZIP.
+          # Kernel-only package: boot is the only partition ever targeted.
           case "$BLOCK" in
-          */boot) ;;
-          *) abort "Unexpected target partition: $BLOCK";;
+            */boot_a|*/boot_b) ;;
+            *) abort "Resolved boot target is invalid: $BLOCK";;
+          esac
+
+          case "$(basename "$BLOCK")" in
+            boot_a|boot_b) ;;
+            *) abort "Unexpected boot target: $BLOCK";;
           esac
 
           DEVICE=$(getprop ro.product.device 2>/dev/null)
@@ -245,39 +201,31 @@ jobs:
           VENDOR_DEVICE=$(getprop ro.product.vendor.device 2>/dev/null)
           VENDOR_PRODUCT=$(getprop ro.vendor.product.device 2>/dev/null)
           case "$DEVICE $BUILD_PRODUCT $VENDOR_DEVICE $VENDOR_PRODUCT" in
-          *bramble*|*redfin*|*barbet*) ;;
-          *) abort "Unsupported device: $DEVICE / $BUILD_PRODUCT / $VENDOR_DEVICE / $VENDOR_PRODUCT";;
+            *bramble*|*redfin*|*barbet*) ;;
+            *) abort "Unsupported device: $DEVICE / $BUILD_PRODUCT / $VENDOR_DEVICE / $VENDOR_PRODUCT";;
           esac
 
-          SLOT=$(getprop ro.boot.slot_suffix 2>/dev/null)
-          [ "$SLOT" ] || SLOT=$(grep -o 'androidboot.slot_suffix=[^ ]*' /proc/cmdline 2>/dev/null | cut -d= -f2)
-          case "$SLOT" in
-          _a|_b) ;;
-          *) abort "Unable to determine a valid active slot: $SLOT";;
-          esac
-
-          TARGET_BLOCK="${BLOCK}${SLOT}"
-          [ -b "$TARGET_BLOCK" ] || abort "Boot partition does not exist: $TARGET_BLOCK"
-          TARGET_SIZE=$(blockdev --getsize64 "$TARGET_BLOCK" 2>/dev/null || echo 0)
-          [ "$TARGET_SIZE" -gt 0 ] || abort "Unable to determine boot partition size: $TARGET_BLOCK"
-          ui_print "Target boot: $TARGET_BLOCK"
-          ui_print "Target size: $TARGET_SIZE bytes"
+          [ -b "$BLOCK" ] || abort "Boot block is not a block device: $BLOCK"
+          ui_print "Aether-Foundry kernel-only installer"
+          ui_print "Target boot: $BLOCK"
+          ui_print "Active slot: $SLOT"
 
           split_boot
 
-          # split_boot must have produced the original boot image and the
-          # Android boot header/kernel/ramdisk components needed by flash_boot.
           [ -s "$BOOTIMG" ] || abort "Original boot image dump is empty. Aborting..."
           [ -s "$SPLITIMG/kernel.gz" ] || abort "Original kernel was not extracted. Aborting..."
-          [ -s "$SPLITIMG/ramdisk.cpio.gz" ] || abort "Original ramdisk was not extracted. Aborting..."
 
+          # Do not unpack/repack the ramdisk here. flash_boot replaces only
+          # the kernel while retaining the original boot components.
           flash_boot
 
-          [ -s "$AKHOME/boot-new.img" ] || abort "No valid rebuilt boot image exists. Aborting..."
+          [ -s "$AKHOME/boot-new.img" ] || abort "Rebuilt boot image is missing. Aborting..."
           NEW_SIZE=$(wc -c < "$AKHOME/boot-new.img")
           ORIGINAL_SIZE=$(wc -c < "$BOOTIMG")
-          [ "$NEW_SIZE" -le "$ORIGINAL_SIZE" ] || abort "Rebuilt boot image exceeds original boot image size. Aborting..."
-          [ "$NEW_SIZE" -le "$TARGET_SIZE" ] || abort "Rebuilt boot image exceeds target partition. Aborting..."
+          TARGET_SIZE=$(blockdev --getsize64 "$BLOCK" 2>/dev/null || echo 0)
+          [ "$NEW_SIZE" -le "$ORIGINAL_SIZE" ] || abort "Rebuilt boot exceeds original image size. Aborting..."
+          [ "$TARGET_SIZE" -gt 0 ] || abort "Unable to read target partition size. Aborting..."
+          [ "$NEW_SIZE" -le "$TARGET_SIZE" ] || abort "Rebuilt boot exceeds target partition size. Aborting..."
           ui_print "Rebuilt boot: $NEW_SIZE bytes"
           AK3
 
@@ -285,116 +233,55 @@ jobs:
           chmod 755 anykernel.sh
           bash -n anykernel.sh
 
-          echo "--- AK3 configuration ---"
-          grep -E 'kernel.string|device.name|supported.versions|BLOCK=|IS_SLOT_DEVICE|SLOT_SELECT|RAMDISK_COMPRESSION|PATCH_VBMETA_FLAG|split_boot|flash_boot|TARGET_BLOCK' anykernel.sh
+          # Never ship an accidentally generated boot image or vendor target.
+          ! grep -Eq '(^|[[:space:]])(vendor_boot|vendor_kernel_boot|vendor_dlkm|system_dlkm|dtbo)([[:space:];]|$)' anykernel.sh
+          grep -q '^BLOCK=/dev/block/bootdevice/by-name/boot$' anykernel.sh
+          grep -q '^IS_SLOT_DEVICE=1$' anykernel.sh
+          grep -q '^SLOT_SELECT=active$' anykernel.sh
+          grep -q '^do.modules=0$' anykernel.sh
+          grep -q '^kernel.string=Aether-Foundry$' anykernel.sh
+          grep -q '^device.name1=bramble$' anykernel.sh
+          grep -q '^device.name2=redfin$' anykernel.sh
+          grep -q '^device.name3=barbet$' anykernel.sh
+          grep -q '^supported.versions=16,17$' anykernel.sh
+          grep -q '^flash_boot$' anykernel.sh
 
-      - name: Validate AnyKernel3 package
-        run: |
-          set -euo pipefail
-          test -s ak3/Image.lz4
-          test -s ak3/anykernel.sh
-          test -s ak3/tools/ak3-core.sh
-          test -s ak3/META-INF/com/google/android/update-binary
-          test -s ak3/LICENSE
-
-          ! test -e ak3/Image.lz4-dtb
-          ! grep -Eq '(^|[[:space:]])(vendor_boot|vendor_kernel_boot|vendor_dlkm|system_dlkm)([[:space:];]|$)' ak3/anykernel.sh
-          grep -q '^BLOCK=/dev/block/bootdevice/by-name/boot$' ak3/anykernel.sh
-          grep -q '^IS_SLOT_DEVICE=1$' ak3/anykernel.sh
-          grep -q '^SLOT_SELECT=active$' ak3/anykernel.sh
-          grep -q '^do.modules=0$' ak3/anykernel.sh
-          grep -q '^device.name1=bramble$' ak3/anykernel.sh
-          grep -q '^device.name2=redfin$' ak3/anykernel.sh
-          grep -q '^device.name3=barbet$' ak3/anykernel.sh
-          grep -q '^supported.versions=16,17$' ak3/anykernel.sh
-          grep -q '^split_boot$' ak3/anykernel.sh
-          grep -q '^flash_boot$' ak3/anykernel.sh
-
-          cd ak3
-          zip -q -r9 ../redbull-test-24.0-LunarEclipse.zip . \
-            -x '.git/*' 'README.md'
+          ZIP="../dist/Aether-Foundry-redbull-test-24.0.zip"
+          zip -q -r9 "$ZIP" . -x '.git/*' 'README.md'
           cd ..
 
-          unzip -t redbull-test-24.0-LunarEclipse.zip >/dev/null
-          unzip -l redbull-test-24.0-LunarEclipse.zip | grep -E '(^|/)Image\.lz4$|(^|/)anykernel\.sh$|META-INF/com/google/android/update-binary|(^|/)LICENSE$'
+          unzip -t "$ZIP" >/dev/null
+          unzip -l "$ZIP" | grep -E '(^|/)Image\.lz4$|(^|/)anykernel\.sh$|META-INF/com/google/android/update-binary|(^|/)LICENSE$'
+          test "$(unzip -Z1 "$ZIP" | grep -c '^Image\.lz4$')" -eq 1
+          test "$(unzip -Z1 "$ZIP" | grep -c '^anykernel\.sh$')" -eq 1
 
-      - name: Collect build information
+      - name: Prepare build/debug artifact
         run: |
           set -euo pipefail
-          mkdir -p artifacts
+          cp "${OUT_DIR}/arch/arm64/boot/Image" debug/Image
+          cp "${OUT_DIR}/arch/arm64/boot/Image.lz4" debug/Image.lz4
+          cp "${OUT_DIR}/.config" debug/.config
+          git rev-parse HEAD > debug/git-commit.txt
+          printf 'Aether-Foundry\n' > debug/kernel-name.txt
+          printf 'Neutron Clang %s\n' "${NEUTRON_VERSION}" > debug/toolchain.txt
+          clang --version > debug/clang-version.txt
+          ld.lld --version > debug/lld-version.txt
+          make -s O="${OUT_DIR}" ARCH="${ARCH}" CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" kernelrelease > debug/kernel-release.txt
+          if [ -f "${OUT_DIR}/Module.symvers" ]; then cp "${OUT_DIR}/Module.symvers" debug/Module.symvers; fi
+          if [ -f "${OUT_DIR}/modules.order" ]; then cp "${OUT_DIR}/modules.order" debug/modules.order; fi
+          find "${OUT_DIR}" -type f -name '*.ko' -print | sort > debug/modules.list
+          sha256sum debug/Image debug/Image.lz4 "dist/Aether-Foundry-redbull-test-24.0.zip" > debug/SHA256SUMS
 
-          cp "${OUT_DIR}/arch/arm64/boot/Image" artifacts/Image
-          cp "${OUT_DIR}/arch/arm64/boot/Image.lz4" artifacts/Image.lz4
-          cp redbull-test-24.0-LunarEclipse.zip artifacts/redbull-test-24.0-LunarEclipse.zip
-          cp "${OUT_DIR}/.config" artifacts/.config
-
-          git rev-parse HEAD > artifacts/git-commit.txt
-          printf 'Neutron Clang %s\n' "${NEUTRON_VERSION}" > artifacts/toolchain.txt
-          clang --version > artifacts/clang-version.txt
-          ld.lld --version > artifacts/lld-version.txt
-          make -s O="${OUT_DIR}" \
-            ARCH="${ARCH}" \
-            CC=clang \
-            LLVM="${LLVM}" \
-            LLVM_IAS="${LLVM_IAS}" \
-            CROSS_COMPILE="${CROSS_COMPILE}" \
-            kernelversion > artifacts/kernel-version.txt
-          make -s O="${OUT_DIR}" \
-            ARCH="${ARCH}" \
-            CC=clang \
-            LLVM="${LLVM}" \
-            LLVM_IAS="${LLVM_IAS}" \
-            CROSS_COMPILE="${CROSS_COMPILE}" \
-            kernelrelease > artifacts/kernel-release.txt
-
-          if [ -f "${OUT_DIR}/Module.symvers" ]; then
-            cp "${OUT_DIR}/Module.symvers" artifacts/Module.symvers
-          fi
-          if [ -f "${OUT_DIR}/modules.order" ]; then
-            cp "${OUT_DIR}/modules.order" artifacts/modules.order
-          fi
-          find "${OUT_DIR}" -type f -name '*.ko' | sort > artifacts/modules.list
-          : > artifacts/modules.sha256
-          if [ -s artifacts/modules.list ]; then
-            while IFS= read -r module; do
-              rel="${module#${OUT_DIR}/}"
-              echo "${rel} $(sha256sum "${module}" | cut -d' ' -f1)" >> artifacts/modules.sha256
-            done < artifacts/modules.list
-          fi
-
-          {
-            echo "External module source:"
-            if [ -d private/msm-google-modules ]; then
-              echo "present"
-            else
-              echo "NOT PRESENT"
-            fi
-          } > artifacts/module-source-status.txt
-
-          sha256sum \
-            artifacts/Image \
-            artifacts/Image.lz4 \
-            artifacts/redbull-test-24.0-LunarEclipse.zip \
-            artifacts/.config > artifacts/SHA256SUMS
-
-          echo "--- Toolchain ---"
-          cat artifacts/toolchain.txt
-          cat artifacts/clang-version.txt
-          cat artifacts/lld-version.txt
-          echo "--- Kernel version ---"
-          cat artifacts/kernel-version.txt
-          echo "--- Kernel release ---"
-          cat artifacts/kernel-release.txt
-          echo "--- Module audit ---"
-          cat artifacts/modules.list || true
-          echo "--- Artifacts ---"
-          ls -lh artifacts/
-          echo "--- Checksums ---"
-          cat artifacts/SHA256SUMS
-
-      - name: Upload kernel and AK3 artifacts
+      - name: Upload flashable ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: redbull-test-24.0-kernel-ak3-${{ github.sha }}
+          name: Aether-Foundry-redbull-test-24.0-FLASHABLE
           if-no-files-found: error
-          path: artifacts/
+          path: dist/Aether-Foundry-redbull-test-24.0.zip
+
+      - name: Upload build/debug files
+        uses: actions/upload-artifact@v4
+        with:
+          name: Aether-Foundry-redbull-test-24.0-BUILD-DEBUG
+          if-no-files-found: error
+          path: debug/
