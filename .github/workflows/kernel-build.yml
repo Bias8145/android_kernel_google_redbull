@@ -171,13 +171,55 @@ jobs:
 
           BLOCK=/dev/block/bootdevice/by-name/boot
           IS_SLOT_DEVICE=1
+          SLOT_SELECT=active
           RAMDISK_COMPRESSION=auto
           PATCH_VBMETA_FLAG=auto
 
           . tools/ak3-core.sh
 
+          # Safety gate: this package is kernel-only and must never target
+          # vendor_boot, vendor_kernel_boot, vendor_dlkm, or system_dlkm.
+          case "$BLOCK" in
+          */boot) ;;
+          *) abort "Unexpected target partition: $BLOCK";;
+          esac
+
+          DEVICE=$(getprop ro.product.device 2>/dev/null)
+          VENDOR_DEVICE=$(getprop ro.product.vendor.device 2>/dev/null)
+          case "$DEVICE $VENDOR_DEVICE" in
+          *bramble*|*redfin*|*barbet*) ;;
+          *) abort "Unsupported device: $DEVICE / $VENDOR_DEVICE";;
+          esac
+
+          SLOT=$(getprop ro.boot.slot_suffix 2>/dev/null)
+          [ "$SLOT" ] || SLOT=$(grep -o 'androidboot.slot_suffix=[^ ]*' /proc/cmdline 2>/dev/null | cut -d= -f2)
+          case "$SLOT" in
+          _a|_b) ;;
+          *) abort "Unable to determine a valid active slot: $SLOT";;
+          esac
+
+          TARGET_BLOCK="${BLOCK}${SLOT}"
+          [ -b "$TARGET_BLOCK" ] || abort "Boot partition does not exist: $TARGET_BLOCK"
+          TARGET_SIZE=$(blockdev --getsize64 "$TARGET_BLOCK" 2>/dev/null || echo 0)
+          [ "$TARGET_SIZE" -gt 0 ] || abort "Unable to determine boot partition size: $TARGET_BLOCK"
+          ui_print "Target boot: $TARGET_BLOCK"
+          ui_print "Target size: $TARGET_SIZE bytes"
+
           split_boot
+
+          # split_boot must leave a real source boot image and a ramdisk.
+          [ -s "$BOOTIMG" ] || abort "Original boot image dump is empty. Aborting..."
+          [ -s "$SPLITIMG/kernel.gz" ] || [ -s "$SPLITIMG/kernel" ] || abort "Original kernel was not extracted. Aborting..."
+          [ -s "$SPLITIMG/ramdisk.cpio.gz" ] || [ -s "$SPLITIMG/ramdisk.cpio" ] || abort "Original ramdisk was not extracted. Aborting..."
+
           flash_boot
+
+          # flash_boot has its own size/write checks; retain an explicit
+          # postcondition so a failed/empty generated image cannot continue.
+          [ -s "$AKHOME/boot-new.img" ] || abort "No valid rebuilt boot image exists. Aborting..."
+          NEW_SIZE=$(wc -c < "$AKHOME/boot-new.img")
+          [ "$NEW_SIZE" -le "$TARGET_SIZE" ] || abort "Rebuilt boot image exceeds target partition. Aborting..."
+          ui_print "Rebuilt boot: $NEW_SIZE bytes"
           AK3
 
           sed -i 's/^[[:space:]]*//' anykernel.sh
@@ -185,7 +227,7 @@ jobs:
           bash -n anykernel.sh
 
           echo "--- AK3 configuration ---"
-          grep -E 'kernel.string|device.name|supported.versions|BLOCK=|IS_SLOT_DEVICE|RAMDISK_COMPRESSION|PATCH_VBMETA_FLAG|split_boot|flash_boot' anykernel.sh
+          grep -E 'kernel.string|device.name|supported.versions|BLOCK=|IS_SLOT_DEVICE|SLOT_SELECT|RAMDISK_COMPRESSION|PATCH_VBMETA_FLAG|split_boot|flash_boot|TARGET_BLOCK' anykernel.sh
 
       - name: Validate AnyKernel3 package
         run: |
@@ -197,6 +239,17 @@ jobs:
           test -s ak3/LICENSE
 
           ! test -e ak3/Image.lz4-dtb
+          ! grep -Eq '(^|[[:space:]])(vendor_boot|vendor_kernel_boot|vendor_dlkm|system_dlkm)([[:space:];]|$)' ak3/anykernel.sh
+          grep -q '^BLOCK=/dev/block/bootdevice/by-name/boot$' ak3/anykernel.sh
+          grep -q '^IS_SLOT_DEVICE=1$' ak3/anykernel.sh
+          grep -q '^SLOT_SELECT=active$' ak3/anykernel.sh
+          grep -q '^do.modules=0$' ak3/anykernel.sh
+          grep -q '^device.name1=bramble$' ak3/anykernel.sh
+          grep -q '^device.name2=redfin$' ak3/anykernel.sh
+          grep -q '^device.name3=barbet$' ak3/anykernel.sh
+          grep -q '^supported.versions=16,17$' ak3/anykernel.sh
+          grep -q '^split_boot$' ak3/anykernel.sh
+          grep -q '^flash_boot$' ak3/anykernel.sh
 
           cd ak3
           zip -q -r9 ../redbull-test-24.0-LunarEclipse.zip . \
