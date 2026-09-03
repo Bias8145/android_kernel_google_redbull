@@ -17,8 +17,6 @@ env:
   OUT_DIR: out
   DEFCONFIG: redbull_defconfig
   AK3_COMMIT: af770f7b16cf8f8eb7c68614b2a693b3b361c90c
-  DTS_REPO: https://github.com/LineageOS/android_kernel_google_redbull.git
-  DTS_REF: lineage-23.2
 
 jobs:
   build:
@@ -44,25 +42,14 @@ jobs:
           aarch64-linux-gnu-ld --version
           lz4 --version
 
-      - name: Restore Google DTB sources
+      - name: Verify branch-local device tree sources
         run: |
           set -euo pipefail
-          rm -rf dts-source
-          git clone --filter=blob:none --no-checkout --depth=1 \
-            --branch "${DTS_REF}" "${DTS_REPO}" dts-source
-          cd dts-source
-          git sparse-checkout init --cone
-          git sparse-checkout set arch/arm64/boot/dts
-          git checkout --detach FETCH_HEAD
-          cd ..
-          test -f dts-source/arch/arm64/boot/dts/Makefile
-          test -f dts-source/arch/arm64/boot/dts/google/Makefile
-          rm -rf arch/arm64/boot/dts
-          mkdir -p arch/arm64/boot
-          cp -a dts-source/arch/arm64/boot/dts arch/arm64/boot/
-          test -f arch/arm64/boot/dts/google/qcom-base/lito.dtb 2>/dev/null || true
+          test -f arch/arm64/boot/dts/Makefile
+          test -f arch/arm64/boot/dts/google/Makefile
           test -d arch/arm64/boot/dts/google
-          echo "DTB source tree restored from ${DTS_REPO}@${DTS_REF}"
+          echo "Using device tree sources from test-24.0"
+          echo "Google DTS files: $(find arch/arm64/boot/dts/google -type f | wc -l)"
 
       - name: Verify ARM64 toolchain
         run: |
