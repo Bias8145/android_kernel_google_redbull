@@ -17,7 +17,6 @@ env:
   OUT_DIR: out
   DEFCONFIG: redbull_defconfig
   AK3_COMMIT: af770f7b16cf8f8eb7c68614b2a693b3b361c90c
-  NEUTRON_VERSION: 30072026
   KERNEL_NAME: Aether-Foundry
 
 jobs:
@@ -38,88 +37,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential cpio flex git libelf-dev libssl-dev \
-            lz4 zip unzip python3 curl kmod file
+            lz4 zip unzip python3 curl kmod file clang lld llvm \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
-      - name: Setup Neutron Clang
+      - name: Verify system LLVM toolchain
         run: |
           set -euo pipefail
-          TOOLCHAIN_DIR="$RUNNER_TEMP/neutron-clang"
-          mkdir -p "$TOOLCHAIN_DIR"
-          cd "$TOOLCHAIN_DIR"
-
-          curl -fsSLO https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman
-          chmod +x antman
-          ./antman -S="${NEUTRON_VERSION}"
-
-          PATCH_LOG="$RUNNER_TEMP/neutron-glibc-patch.log"
-          if ./antman --patch=glibc >"$PATCH_LOG" 2>&1; then
-            PATCH_RC=0
-          else
-            PATCH_RC=$?
-          fi
-          cat "$PATCH_LOG"
-
-          if [ "$PATCH_RC" -ne 0 ] && ! grep -Fq 'SUCCESS: glibc compatibility patch applied successfully' "$PATCH_LOG"; then
-            echo "ERROR: Neutron glibc compatibility patch failed (exit $PATCH_RC)."
-            exit "$PATCH_RC"
-          fi
-
-          BIN="$TOOLCHAIN_DIR/bin"
-          export PATH="$BIN:$PATH"
-
-          echo "Neutron bin directory:"
-          find "$BIN" -maxdepth 1 -type f -o -type l | sort
-
-          # Neutron may ship LLVM tools under versioned names/symlinks.
-          # Normalize the names expected by the Linux kernel LLVM=1 build.
-          link_tool() {
-            local wanted="$1"; shift
-            if [ -x "$BIN/$wanted" ]; then
-              return 0
-            fi
-            local candidate
-            for candidate in "$@"; do
-              if [ -x "$BIN/$candidate" ]; then
-                ln -sf "$candidate" "$BIN/$wanted"
-                echo "Normalized $wanted -> $candidate"
-                return 0
-              fi
-            done
-            echo "ERROR: required Neutron tool missing: $wanted"
-            echo "Available matching tools:"
-            find "$BIN" -maxdepth 1 -type f -o -type l | grep -E '/(clang|lld|llvm-|aarch64-linux-gnu-)' | sort || true
-            return 1
-          }
-
-          link_tool clang clang-24 clang-24.0.0
-          link_tool ld.lld ld.lld-24 lld
-          link_tool llvm-ar llvm-ar-24
-          link_tool llvm-nm llvm-nm-24
-          link_tool llvm-objcopy llvm-objcopy-24
-          link_tool llvm-objdump llvm-objdump-24
-          link_tool llvm-strip llvm-strip-24
-          link_tool aarch64-linux-gnu-ld aarch64-linux-gnu-ld.bfd aarch64-linux-gnu-ld
-
-          for tool in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip aarch64-linux-gnu-ld; do
-            if ! test -x "$BIN/$tool"; then
-              echo "ERROR: normalized tool is not executable: $BIN/$tool"
-              exit 1
-            fi
-          done
-
-          echo "$BIN" >> "$GITHUB_PATH"
-          echo "NEUTRON_TOOLCHAIN=$TOOLCHAIN_DIR" >> "$GITHUB_ENV"
-
-      - name: Verify Neutron toolchain
-        run: |
-          set -euo pipefail
-          for tool in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip aarch64-linux-gnu-ld; do
-            resolved="$(command -v "$tool")"
-            test "$resolved" = "${NEUTRON_TOOLCHAIN}/bin/$tool"
-            test -x "$resolved"
-            echo "$tool -> $resolved"
-          done
-
+          command -v clang
+          command -v ld.lld
+          command -v llvm-ar
+          command -v llvm-nm
+          command -v llvm-objcopy
+          command -v llvm-objdump
+          command -v llvm-strip
+          command -v aarch64-linux-gnu-ld
           clang --version
           ld.lld --version
           aarch64-linux-gnu-ld --version
@@ -128,24 +59,19 @@ jobs:
       - name: Configure kernel
         run: |
           set -euo pipefail
-          make O="${OUT_DIR}" \
-            ARCH="${ARCH}" CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" \
-            CROSS_COMPILE="${CROSS_COMPILE}" "${DEFCONFIG}"
-
+          make O="${OUT_DIR}" ARCH="${ARCH}" CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" "${DEFCONFIG}"
           test -s "${OUT_DIR}/.config"
           grep -q '^CONFIG_ARM64=y' "${OUT_DIR}/.config"
           echo "Kernel: ${KERNEL_NAME}"
           echo "Defconfig: ${DEFCONFIG}"
-          echo "Neutron Clang: ${NEUTRON_VERSION}"
+          echo "Compiler: system clang"
+          clang --version | head -n 1
           grep -E '^(CONFIG_LOCALVERSION|CONFIG_KERNEL_LZ4|CONFIG_MODULES|CONFIG_MODVERSIONS)=' "${OUT_DIR}/.config" || true
 
       - name: Build kernel
         run: |
           set -euo pipefail
-          make -j"$(nproc)" O="${OUT_DIR}" ARCH="${ARCH}" \
-            CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" \
-            CROSS_COMPILE="${CROSS_COMPILE}" Image
-
+          make -j"$(nproc)" O="${OUT_DIR}" ARCH="${ARCH}" CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" Image
           IMAGE="${OUT_DIR}/arch/arm64/boot/Image"
           test -s "$IMAGE"
           file "$IMAGE" | grep -qi 'ARM aarch64\|ARM64\|ARM'
@@ -154,22 +80,16 @@ jobs:
         run: |
           set -euo pipefail
           if grep -q '^CONFIG_MODULES=y' "${OUT_DIR}/.config"; then
-            make -j"$(nproc)" O="${OUT_DIR}" ARCH="${ARCH}" \
-              CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" \
-              CROSS_COMPILE="${CROSS_COMPILE}" modules
-
+            make -j"$(nproc)" O="${OUT_DIR}" ARCH="${ARCH}" CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" modules
             test -s "${OUT_DIR}/modules.order"
             mapfile -t modules < <(find "${OUT_DIR}" -type f -name '*.ko' | sort)
             test "${#modules[@]}" -gt 0
-
             if grep -q '^CONFIG_MODVERSIONS=y' "${OUT_DIR}/.config"; then
               test -s "${OUT_DIR}/Module.symvers"
             fi
-
             kernel_release="$(make -s O="${OUT_DIR}" ARCH="${ARCH}" CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" kernelrelease)"
             test -n "$kernel_release"
             echo "Kernel release: $kernel_release"
-
             for module in "${modules[@]}"; do
               test -s "$module"
               vermagic="$(modinfo -F vermagic "$module" 2>/dev/null || true)"
@@ -203,17 +123,14 @@ jobs:
           set -euo pipefail
           rm -rf ak3 dist debug
           mkdir -p dist debug
-
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3
           cd ak3
           git fetch --depth=1 origin "${AK3_COMMIT}"
           git checkout --detach "${AK3_COMMIT}"
           cp "../${OUT_DIR}/arch/arm64/boot/Image.lz4" ./Image.lz4
-
           cat > anykernel.sh <<'AK3'
           ### AnyKernel3 Ramdisk Mod Script
           ## Aether-Foundry
-
           properties() {
           kernel.string=Aether-Foundry
           do.devicecheck=1
@@ -228,25 +145,20 @@ jobs:
           supported.patchlevels=
           supported.vendorpatchlevels=
           }
-
           BLOCK=/dev/block/bootdevice/by-name/boot
           IS_SLOT_DEVICE=1
           SLOT_SELECT=active
           RAMDISK_COMPRESSION=auto
           PATCH_VBMETA_FLAG=auto
-
           . tools/ak3-core.sh
-
           case "$BLOCK" in
             */boot_a|*/boot_b) ;;
             *) abort "Resolved boot target is invalid: $BLOCK";;
           esac
-
           case "$(basename "$BLOCK")" in
             boot_a|boot_b) ;;
             *) abort "Unexpected boot target: $BLOCK";;
           esac
-
           DEVICE=$(getprop ro.product.device 2>/dev/null)
           BUILD_PRODUCT=$(getprop ro.build.product 2>/dev/null)
           VENDOR_DEVICE=$(getprop ro.product.vendor.device 2>/dev/null)
@@ -255,19 +167,14 @@ jobs:
             *bramble*|*redfin*|*barbet*) ;;
             *) abort "Unsupported device: $DEVICE / $BUILD_PRODUCT / $VENDOR_DEVICE / $VENDOR_PRODUCT";;
           esac
-
           [ -b "$BLOCK" ] || abort "Boot block is not a block device: $BLOCK"
           ui_print "Aether-Foundry kernel-only installer"
           ui_print "Target boot: $BLOCK"
           ui_print "Active slot: $SLOT"
-
           split_boot
-
           [ -s "$BOOTIMG" ] || abort "Original boot image dump is empty. Aborting..."
           [ -s "$SPLITIMG/kernel.gz" ] || abort "Original kernel was not extracted. Aborting..."
-
           flash_boot
-
           [ -s "$AKHOME/boot-new.img" ] || abort "Rebuilt boot image is missing. Aborting..."
           NEW_SIZE=$(wc -c < "$AKHOME/boot-new.img")
           ORIGINAL_SIZE=$(wc -c < "$BOOTIMG")
@@ -277,11 +184,9 @@ jobs:
           [ "$NEW_SIZE" -le "$TARGET_SIZE" ] || abort "Rebuilt boot exceeds target partition size. Aborting..."
           ui_print "Rebuilt boot: $NEW_SIZE bytes"
           AK3
-
           sed -i 's/^[[:space:]]*//' anykernel.sh
           chmod 755 anykernel.sh
           bash -n anykernel.sh
-
           ! grep -Eq '(^|[[:space:]])(vendor_boot|vendor_kernel_boot|vendor_dlkm|system_dlkm|dtbo)([[:space:];]|$)' anykernel.sh
           grep -q '^BLOCK=/dev/block/bootdevice/by-name/boot$' anykernel.sh
           grep -q '^IS_SLOT_DEVICE=1$' anykernel.sh
@@ -293,11 +198,9 @@ jobs:
           grep -q '^device.name3=barbet$' anykernel.sh
           grep -q '^supported.versions=16,17$' anykernel.sh
           grep -q '^flash_boot$' anykernel.sh
-
           ZIP="../dist/Aether-Foundry-redbull-test-24.0.zip"
           zip -q -r9 "$ZIP" . -x '.git/*' 'README.md'
           cd ..
-
           unzip -t "$ZIP" >/dev/null
           unzip -l "$ZIP" | grep -E '(^|/)Image\.lz4$|(^|/)anykernel\.sh$|META-INF/com/google/android/update-binary|(^|/)LICENSE$'
           test "$(unzip -Z1 "$ZIP" | grep -c '^Image\.lz4$')" -eq 1
@@ -311,7 +214,7 @@ jobs:
           cp "${OUT_DIR}/.config" debug/.config
           git rev-parse HEAD > debug/git-commit.txt
           printf 'Aether-Foundry\n' > debug/kernel-name.txt
-          printf 'Neutron Clang %s\n' "${NEUTRON_VERSION}" > debug/toolchain.txt
+          printf 'System Clang\n' > debug/toolchain.txt
           clang --version > debug/clang-version.txt
           ld.lld --version > debug/lld-version.txt
           make -s O="${OUT_DIR}" ARCH="${ARCH}" CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" kernelrelease > debug/kernel-release.txt
