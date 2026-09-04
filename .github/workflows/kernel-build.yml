@@ -18,6 +18,8 @@ env:
   DEFCONFIG: redbull_defconfig
   AK3_COMMIT: af770f7b16cf8f8eb7c68614b2a693b3b361c90c
   KERNEL_NAME: Aether-Foundry
+  LLVM_VERSION: 23.1.0
+  LLVM_DIR: ${{ github.workspace }}/llvm-23.1.0
 
 jobs:
   build:
@@ -37,12 +39,28 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential cpio flex git libelf-dev libssl-dev \
-            lz4 zip unzip python3 curl kmod file clang lld llvm \
+            lz4 zip unzip python3 curl kmod file xz-utils \
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
-      - name: Verify system LLVM toolchain
+      - name: Install LLVM 23.1.0
         run: |
           set -euo pipefail
+          LLVM_URL="https://www.kernel.org/pub/tools/llvm/files/llvm-${LLVM_VERSION}-x86_64.tar.xz"
+          curl --fail --location --retry 5 --retry-delay 2 --output llvm.tar.xz "$LLVM_URL"
+          mkdir -p "${LLVM_DIR}"
+          tar -xJf llvm.tar.xz --strip-components=1 -C "${LLVM_DIR}"
+          test -x "${LLVM_DIR}/bin/clang"
+          test -x "${LLVM_DIR}/bin/ld.lld"
+          test -x "${LLVM_DIR}/bin/llvm-ar"
+          test -x "${LLVM_DIR}/bin/llvm-nm"
+          test -x "${LLVM_DIR}/bin/llvm-objcopy"
+          test -x "${LLVM_DIR}/bin/llvm-objdump"
+          test -x "${LLVM_DIR}/bin/llvm-strip"
+
+      - name: Verify LLVM 23.1.0 toolchain
+        run: |
+          set -euo pipefail
+          export PATH="${LLVM_DIR}/bin:${PATH}"
           command -v clang
           command -v ld.lld
           command -v llvm-ar
@@ -50,28 +68,29 @@ jobs:
           command -v llvm-objcopy
           command -v llvm-objdump
           command -v llvm-strip
-          command -v aarch64-linux-gnu-ld
           clang --version
           ld.lld --version
-          aarch64-linux-gnu-ld --version
+          llvm-ar --version | head -n 1
           test "$(clang --target=aarch64-linux-gnu -dumpmachine)" = "aarch64-unknown-linux-gnu"
+          test "$(clang -dumpversion | cut -d. -f1)" = "23"
 
       - name: Configure kernel
+        env:
+          PATH: ${{ github.workspace }}/llvm-23.1.0/bin:${{ env.PATH }}
         run: |
           set -euo pipefail
-          # This tree provides arch/arm64/configs/redbull_defconfig, but its
-          # KBUILD_DEFCONFIG is the generic 'defconfig' target. Override it
-          # explicitly instead of relying on the %_defconfig pattern rule.
           make O="${OUT_DIR}" ARCH="${ARCH}" CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" KBUILD_DEFCONFIG="${DEFCONFIG}" defconfig
           test -s "${OUT_DIR}/.config"
           grep -q '^CONFIG_ARM64=y' "${OUT_DIR}/.config"
           echo "Kernel: ${KERNEL_NAME}"
           echo "Defconfig: ${DEFCONFIG}"
-          echo "Compiler: system clang"
+          echo "Toolchain: LLVM/Clang ${LLVM_VERSION} (kernel.org prebuilt)"
           clang --version | head -n 1
           grep -E '^(CONFIG_LOCALVERSION|CONFIG_KERNEL_LZ4|CONFIG_MODULES|CONFIG_MODVERSIONS)=' "${OUT_DIR}/.config" || true
 
       - name: Build kernel
+        env:
+          PATH: ${{ github.workspace }}/llvm-23.1.0/bin:${{ env.PATH }}
         run: |
           set -euo pipefail
           make -j"$(nproc)" O="${OUT_DIR}" ARCH="${ARCH}" CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" Image
@@ -80,6 +99,8 @@ jobs:
           file "$IMAGE" | grep -qi 'ARM aarch64\|ARM64\|ARM'
 
       - name: Build and validate modules
+        env:
+          PATH: ${{ github.workspace }}/llvm-23.1.0/bin:${{ env.PATH }}
         run: |
           set -euo pipefail
           if grep -q '^CONFIG_MODULES=y' "${OUT_DIR}/.config"; then
@@ -210,6 +231,8 @@ jobs:
           test "$(unzip -Z1 "$ZIP" | grep -c '^anykernel\.sh$')" -eq 1
 
       - name: Prepare build/debug artifact
+        env:
+          PATH: ${{ github.workspace }}/llvm-23.1.0/bin:${{ env.PATH }}
         run: |
           set -euo pipefail
           cp "${OUT_DIR}/arch/arm64/boot/Image" debug/Image
@@ -217,7 +240,7 @@ jobs:
           cp "${OUT_DIR}/.config" debug/.config
           git rev-parse HEAD > debug/git-commit.txt
           printf 'Aether-Foundry\n' > debug/kernel-name.txt
-          printf 'System Clang\n' > debug/toolchain.txt
+          printf 'LLVM/Clang 23.1.0 (kernel.org prebuilt)\n' > debug/toolchain.txt
           clang --version > debug/clang-version.txt
           ld.lld --version > debug/lld-version.txt
           make -s O="${OUT_DIR}" ARCH="${ARCH}" CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" kernelrelease > debug/kernel-release.txt
