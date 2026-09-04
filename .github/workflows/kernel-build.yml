@@ -60,7 +60,7 @@ jobs:
       - name: Verify LLVM 23.1.0 toolchain
         run: |
           set -euo pipefail
-          export PATH="${LLVM_DIR}/bin:${PATH}"
+          export PATH="${LLVM_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
           command -v clang
           command -v ld.lld
           command -v llvm-ar
@@ -68,17 +68,18 @@ jobs:
           command -v llvm-objcopy
           command -v llvm-objdump
           command -v llvm-strip
+          command -v make
           clang --version
           ld.lld --version
           llvm-ar --version | head -n 1
+          make --version | head -n 1
           test "$(clang --target=aarch64-linux-gnu -dumpmachine)" = "aarch64-unknown-linux-gnu"
           test "$(clang -dumpversion | cut -d. -f1)" = "23"
 
       - name: Configure kernel
-        env:
-          PATH: ${{ github.workspace }}/llvm-23.1.0/bin:${{ env.PATH }}
         run: |
           set -euo pipefail
+          export PATH="${LLVM_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
           make O="${OUT_DIR}" ARCH="${ARCH}" CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" KBUILD_DEFCONFIG="${DEFCONFIG}" defconfig
           test -s "${OUT_DIR}/.config"
           grep -q '^CONFIG_ARM64=y' "${OUT_DIR}/.config"
@@ -89,20 +90,18 @@ jobs:
           grep -E '^(CONFIG_LOCALVERSION|CONFIG_KERNEL_LZ4|CONFIG_MODULES|CONFIG_MODVERSIONS)=' "${OUT_DIR}/.config" || true
 
       - name: Build kernel
-        env:
-          PATH: ${{ github.workspace }}/llvm-23.1.0/bin:${{ env.PATH }}
         run: |
           set -euo pipefail
+          export PATH="${LLVM_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
           make -j"$(nproc)" O="${OUT_DIR}" ARCH="${ARCH}" CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" Image
           IMAGE="${OUT_DIR}/arch/arm64/boot/Image"
           test -s "$IMAGE"
           file "$IMAGE" | grep -qi 'ARM aarch64\|ARM64\|ARM'
 
       - name: Build and validate modules
-        env:
-          PATH: ${{ github.workspace }}/llvm-23.1.0/bin:${{ env.PATH }}
         run: |
           set -euo pipefail
+          export PATH="${LLVM_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
           if grep -q '^CONFIG_MODULES=y' "${OUT_DIR}/.config"; then
             make -j"$(nproc)" O="${OUT_DIR}" ARCH="${ARCH}" CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" modules
             test -s "${OUT_DIR}/modules.order"
@@ -231,10 +230,9 @@ jobs:
           test "$(unzip -Z1 "$ZIP" | grep -c '^anykernel\.sh$')" -eq 1
 
       - name: Prepare build/debug artifact
-        env:
-          PATH: ${{ github.workspace }}/llvm-23.1.0/bin:${{ env.PATH }}
         run: |
           set -euo pipefail
+          export PATH="${LLVM_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
           cp "${OUT_DIR}/arch/arm64/boot/Image" debug/Image
           cp "${OUT_DIR}/arch/arm64/boot/Image.lz4" debug/Image.lz4
           cp "${OUT_DIR}/.config" debug/.config
