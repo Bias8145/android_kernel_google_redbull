@@ -51,11 +51,6 @@ jobs:
           chmod +x antman
           ./antman -S="${NEUTRON_VERSION}"
 
-          # Neutron 30072026 is built against a newer glibc than Ubuntu 24.04
-          # provides. Patch the synced toolchain so clang/LLD use the bundled
-          # compatible glibc/glibcxx instead of the host libraries.
-          # Run the patch command in an if-condition so Bash set -e cannot
-          # terminate the step before its exit status can be inspected.
           PATCH_LOG="$RUNNER_TEMP/neutron-glibc-patch.log"
           if ./antman --patch=glibc >"$PATCH_LOG" 2>&1; then
             PATCH_RC=0
@@ -64,27 +59,65 @@ jobs:
           fi
           cat "$PATCH_LOG"
 
-          if [ "$PATCH_RC" -ne 0 ]; then
-            if grep -Fq 'SUCCESS: glibc compatibility patch applied successfully' "$PATCH_LOG"; then
-              echo "AntMan returned $PATCH_RC after a successful glibc patch; continuing."
-            else
-              echo "ERROR: Neutron glibc compatibility patch failed (exit $PATCH_RC)."
-              exit "$PATCH_RC"
-            fi
+          if [ "$PATCH_RC" -ne 0 ] && ! grep -Fq 'SUCCESS: glibc compatibility patch applied successfully' "$PATCH_LOG"; then
+            echo "ERROR: Neutron glibc compatibility patch failed (exit $PATCH_RC)."
+            exit "$PATCH_RC"
           fi
 
+          BIN="$TOOLCHAIN_DIR/bin"
+          export PATH="$BIN:$PATH"
+
+          echo "Neutron bin directory:"
+          find "$BIN" -maxdepth 1 -type f -o -type l | sort
+
+          # Neutron may ship LLVM tools under versioned names/symlinks.
+          # Normalize the names expected by the Linux kernel LLVM=1 build.
+          link_tool() {
+            local wanted="$1"; shift
+            if [ -x "$BIN/$wanted" ]; then
+              return 0
+            fi
+            local candidate
+            for candidate in "$@"; do
+              if [ -x "$BIN/$candidate" ]; then
+                ln -sf "$candidate" "$BIN/$wanted"
+                echo "Normalized $wanted -> $candidate"
+                return 0
+              fi
+            done
+            echo "ERROR: required Neutron tool missing: $wanted"
+            echo "Available matching tools:"
+            find "$BIN" -maxdepth 1 -type f -o -type l | grep -E '/(clang|lld|llvm-|aarch64-linux-gnu-)' | sort || true
+            return 1
+          }
+
+          link_tool clang clang-24 clang-24.0.0
+          link_tool ld.lld ld.lld-24 lld
+          link_tool llvm-ar llvm-ar-24
+          link_tool llvm-nm llvm-nm-24
+          link_tool llvm-objcopy llvm-objcopy-24
+          link_tool llvm-objdump llvm-objdump-24
+          link_tool llvm-strip llvm-strip-24
+          link_tool aarch64-linux-gnu-ld aarch64-linux-gnu-ld.bfd aarch64-linux-gnu-ld
+
           for tool in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip aarch64-linux-gnu-ld; do
-            test -x "$TOOLCHAIN_DIR/bin/$tool"
+            if ! test -x "$BIN/$tool"; then
+              echo "ERROR: normalized tool is not executable: $BIN/$tool"
+              exit 1
+            fi
           done
 
-          echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+          echo "$BIN" >> "$GITHUB_PATH"
           echo "NEUTRON_TOOLCHAIN=$TOOLCHAIN_DIR" >> "$GITHUB_ENV"
 
       - name: Verify Neutron toolchain
         run: |
           set -euo pipefail
           for tool in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip aarch64-linux-gnu-ld; do
-            test "$(command -v "$tool")" = "${NEUTRON_TOOLCHAIN}/bin/$tool"
+            resolved="$(command -v "$tool")"
+            test "$resolved" = "${NEUTRON_TOOLCHAIN}/bin/$tool"
+            test -x "$resolved"
+            echo "$tool -> $resolved"
           done
 
           clang --version
