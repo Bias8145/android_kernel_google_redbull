@@ -59,7 +59,10 @@ jobs:
       - name: Configure kernel
         run: |
           set -euo pipefail
-          make O="${OUT_DIR}" ARCH="${ARCH}" CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" "${DEFCONFIG}"
+          # This tree provides arch/arm64/configs/redbull_defconfig, but its
+          # KBUILD_DEFCONFIG is the generic 'defconfig' target. Override it
+          # explicitly instead of relying on the %_defconfig pattern rule.
+          make O="${OUT_DIR}" ARCH="${ARCH}" CC=clang LLVM="${LLVM}" LLVM_IAS="${LLVM_IAS}" CROSS_COMPILE="${CROSS_COMPILE}" KBUILD_DEFCONFIG="${DEFCONFIG}" defconfig
           test -s "${OUT_DIR}/.config"
           grep -q '^CONFIG_ARM64=y' "${OUT_DIR}/.config"
           echo "Kernel: ${KERNEL_NAME}"
