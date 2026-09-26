@@ -513,5 +513,4 @@ DEFINE_LOCK_GUARD_1(spinlock_irqsave, spinlock_t,
 		    spin_lock_irqsave(_T->lock, _T->flags),
 		    spin_unlock_irqrestore(_T->lock, _T->flags),
 		    unsigned long flags)
->>>>>>> c391efbf6dbf (BACKPORT: locking: Introduce __cleanup() based infrastructure)
 #endif /* __LINUX_SPINLOCK_H */
